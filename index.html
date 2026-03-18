@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hospital Municipal de Malanje — Gestão de Medicamentos</title>
+<link rel="stylesheet" href="styles.css">
+<!-- Chart.js for dashboard charts -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+/* ===== SETUP SCREEN ===== */
+#setup {
+  background: linear-gradient(135deg,#061224 0%,#0A2463 40%,#0D3B7C 70%,#061224 100%);
+  align-items: center; justify-content: center;
+}
+.setup-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 480px;
+  box-shadow: var(--shadow);
+}
+.setup-icon {
+  width: 60px; height: 60px;
+  background: linear-gradient(135deg,var(--accent),var(--accent-dark));
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 20px;
+}
+.setup-icon svg { width: 28px; height: 28px; color: #fff; stroke: #fff; }
+.setup-title { text-align: center; font-size: 22px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.setup-sub { text-align: center; font-size: 13px; color: var(--text-muted); margin-bottom: 28px; }
+.setup-step { font-size: 11px; color: var(--accent); font-weight: 600; text-align: center; margin-bottom: 18px; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ===== USUARIOS PAGE ===== */
+.user-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  transition: var(--transition);
+  margin-bottom: 10px;
+}
+.user-card:hover { border-color: var(--accent); }
+.user-card-avatar {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg,var(--primary-light),var(--accent-dark));
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 16px; color: #fff; flex-shrink: 0;
+}
+.user-card-info { flex: 1; }
+.user-card-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
+.user-card-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.user-card-actions { display: flex; gap: 8px; }
+.role-badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; }
+.role-admin { background: rgba(0,184,148,0.15); color: var(--accent); }
+.role-user { background: rgba(52,152,219,0.15); color: var(--info); }
+
+/* ===== SYNC PAGE ===== */
+.sync-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 16px;
+}
+.sync-card-header {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px;
+}
+.sync-icon {
+  width: 42px; height: 42px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.sync-icon svg { width: 20px; height: 20px; }
+.sync-card-title { font-weight: 700; font-size: 15px; color: var(--text-primary); }
+.sync-card-desc { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.sync-status-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border-radius: var(--radius-xs);
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.sync-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.sync-dot.ok { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.sync-dot.err { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+.sync-dot.pulse {
+  background: var(--warning);
+  animation: pulseDot 1s infinite;
+}
+@keyframes pulseDot {
+  0%,100% { opacity: 1; } 50% { opacity: 0.3; }
+}
+.sync-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.script-code {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 14px;
+  font-family: 'Consolas','Courier New',monospace;
+  font-size: 11px;
+  color: var(--accent-light);
+  white-space: pre;
+  overflow-x: auto;
+  margin-top: 10px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.setup-steps-list {
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.9;
+}
+.setup-steps-list li { margin-bottom: 2px; }
+.setup-steps-list code {
+  background: var(--bg-input);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--accent-light);
+}
+
+/* ===== DASHBOARD CHARTS ===== */
+.chart-container {
+  position: relative;
+  width: 100%;
+  height: 220px;
+}
+.chart-title {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  display: flex; align-items: center; gap: 6px;
+}
+.chart-period-btns {
+  display: flex; gap: 6px; margin-left: auto;
+}
+.chart-period-btn {
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.chart-period-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.chart-period-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
+.charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+@media (max-width: 900px) {
+  .charts-row { grid-template-columns: 1fr; }
+}
+
+/* ===== MOV DATE FILTER ===== */
+.filter-row {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  align-items: center; margin-bottom: 0;
+}
+.date-filter-wrap {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-muted);
+}
+.date-filter-wrap input[type="date"] {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.date-filter-wrap input[type="date"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ===== DB IMPORT CONFIG ===== */
+.config-field {
+  display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px;
+}
+.config-field label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+.config-field input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-primary);
+  padding: 9px 12px;
+  font-size: 13px;
+  transition: var(--transition);
+}
+.config-field input:focus { outline: none; border-color: var(--accent); }
+
+/* ===== PAGINATION ===== */
+.pagination {
+  display: flex; align-items: center; gap: 6px;
+  justify-content: center;
+  padding: 16px 0 0;
+}
+.pag-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.pag-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pag-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pag-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<!-- ==================== SPLASH SCREEN ==================== -->
+<div class="screen active" id="splash">
+  <div id="splash-particles" class="splash-particles"></div>
+  <div class="splash-grid"></div>
+  <div class="splash-logo-wrap">
+    <div class="splash-icon-ring">
+      <div class="splash-ring splash-ring-1"></div>
+      <div class="splash-ring splash-ring-2"></div>
+      <div class="splash-ring splash-ring-3"></div>
+      <div class="splash-icon-center">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 0 1-2 2zm14-6H2V9a2 2 0 0 1 2-2h4V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2h4a2 2 0 0 1 2 2v6z"/><path d="M12 11v4M10 13h4"/></svg>
+      </div>
+    </div>
+    <div class="splash-title-block">
+      <div class="splash-hospital">Hospital Municipal de Malanje</div>
+      <div class="splash-main-title">Gestão de Medicamentos</div>
+      <div class="splash-subtitle">Sistema de Controlo de Depósito — v2.0</div>
+    </div>
+    <div class="splash-progress-wrap">
+      <div class="splash-progress-label">
+        <span id="splash-label">Iniciando sistema...</span>
+        <span id="splash-pct">0%</span>
+      </div>
+      <div class="splash-progress-bar">
+        <div class="splash-progress-fill" id="splash-fill"></div>
+      </div>
+    </div>
+  </div>
+  <div class="splash-version">© 2025 HMM — Depósito de Medicamentos v2.0</div>
+</div>
+
+<!-- ==================== SETUP SCREEN (FIRST RUN) ==================== -->
+<div class="screen" id="setup">
+  <div class="setup-box">
+    <div class="setup-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </div>
+    <div class="setup-title">Configuração Inicial</div>
+    <div class="setup-sub">Primeira execução detectada. Crie a conta de administrador para começar.</div>
+    <div class="setup-step">Passo 1 de 1 — Criar Administrador</div>
+    <form id="setup-form" autocomplete="off">
+      <div class="form-group">
+        <label class="form-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Nome Completo
+        </label>
+        <div class="form-input-wrap">
+          <input type="text" class="form-input" id="setup-nome" placeholder="Ex: João Administrador" required autocomplete="off">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Nome de Utilizador
+        </label>
+        <div class="form-input-wrap">
+          <input type="text" class="form-input" id="setup-username" placeholder="Ex: admin" required autocomplete="off">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Senha
+        </label>
+        <div class="form-input-wrap">
+          <input type="password" class="form-input" id="setup-pwd" placeholder="Mínimo 6 caracteres" required autocomplete="off">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Confirmar Senha
+        </label>
+        <div class="form-input-wrap">
+          <input type="password" class="form-input" id="setup-pwd2" placeholder="Repetir senha" required autocomplete="off">
+        </div>
+      </div>
+      <div class="login-error" id="setup-error"></div>
+      <button type="submit" class="btn-login" id="setup-btn">
+        <div class="btn-spin"></div>
+        <span class="btn-text">Criar Conta e Iniciar</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ==================== LOGIN SCREEN ==================== -->
+<div class="screen" id="login">
+  <div class="login-bg-decor">
+    <div class="login-circle login-circle-1"></div>
+    <div class="login-circle login-circle-2"></div>
+  </div>
+  <div class="login-container">
+    <div class="login-left">
+      <div class="login-brand">
+        <div class="login-brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 0 1-2 2zm14-6H2V9a2 2 0 0 1 2-2h4V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2h4a2 2 0 0 1 2 2v6z"/><path d="M12 11v4M10 13h4"/></svg>
+        </div>
+        <div class="login-brand-name">Hospital Municipal<br>de Malanje</div>
+        <div class="login-brand-sub">DEPÓSITO DE MEDICAMENTOS</div>
+      </div>
+      <div class="login-features">
+        <div class="login-feat"><div class="login-feat-dot"></div>Gestão completa de stock</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Controlo de lotes e validades</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Rastreamento de entradas/saídas</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Alertas automáticos de stock</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Relatórios e exportação XLSX</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Gráficos de consumo</div>
+        <div class="login-feat"><div class="login-feat-dot"></div>Sincronização com Google Sheets</div>
+      </div>
+      <div class="login-left-bottom">Sistema protegido. Apenas utilizadores autorizados.</div>
+    </div>
+    <div class="login-right">
+      <div class="login-header">
+        <h2>Bem-vindo</h2>
+        <p>Introduza as suas credenciais para aceder ao sistema</p>
+      </div>
+      <form class="login-form" id="login-form" autocomplete="off">
+        <div class="form-group">
+          <label class="form-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            Utilizador
+          </label>
+          <div class="form-input-wrap">
+            <span class="input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <input type="text" class="form-input" id="user-input" placeholder="Nome de utilizador" required autocomplete="off">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            Senha
+          </label>
+          <div class="form-input-wrap">
+            <span class="input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+            <input type="password" class="form-input" id="pwd-input" placeholder="••••••••" required autocomplete="off">
+            <button type="button" class="input-toggle" id="pwd-toggle">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="login-error" id="login-error"></div>
+        <button type="submit" class="btn-login" id="login-btn">
+          <div class="btn-spin"></div>
+          <span class="btn-text">Entrar no Sistema</span>
+        </button>
+      </form>
+      <div style="text-align:center;font-size:11px;color:var(--text-muted);">
+        Sistema offline · Dados armazenados localmente com segurança
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MAIN APP ==================== -->
+<div class="screen" id="app">
+
+  <!-- SIDEBAR -->
+  <nav id="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 0 1-2 2zm14-6H2V9a2 2 0 0 1 2-2h4V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2h4a2 2 0 0 1 2 2v6z"/><path d="M12 11v4M10 13h4"/></svg>
+      </div>
+      <div class="sidebar-logo-text">
+        <div class="sidebar-logo-main">HMM — Depósito</div>
+        <div class="sidebar-logo-sub">Gestão de Medicamentos</div>
+      </div>
+    </div>
+
+    <div class="sidebar-nav">
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Principal</div>
+        <div class="nav-item" data-page="dashboard">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+          <span class="nav-label">Dashboard</span>
+        </div>
+        <div class="nav-item" data-page="produtos">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 20H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H20a2 2 0 0 1 2 2v3"/><circle cx="18" cy="18" r="4"/><path d="m15.4 20.6 5.2-5.2"/></svg></div>
+          <span class="nav-label">Produtos</span>
+        </div>
+        <div class="nav-item" data-page="fornecedores">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z"/><path d="M3 9V6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3"/><path d="M12 12v5M8 12v5M16 12v5"/></svg></div>
+          <span class="nav-label">Fornecedores</span>
+        </div>
+        <div class="nav-item" data-page="prateleiras">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="3" rx="1"/><rect x="2" y="10" width="20" height="3" rx="1"/><rect x="2" y="17" width="20" height="3" rx="1"/><path d="M6 6v4M10 6v4M14 6v4M18 6v4"/></svg></div>
+          <span class="nav-label">Prateleiras</span>
+        </div>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Movimentações</div>
+        <div class="nav-item" data-page="lotes">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>
+          <span class="nav-label">Cadastro de Lotes</span>
+        </div>
+        <div class="nav-item" data-page="movimentacoes">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4m0 0L3 8m4-4 4 4"/><path d="M17 8v12m0 0 4-4m-4 4-4-4"/></svg></div>
+          <span class="nav-label">Entrada / Saída</span>
+        </div>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Sistema</div>
+        <div class="nav-item" data-page="alertas">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <span class="nav-label">Alertas</span>
+          <span class="nav-badge" id="nav-badge-alertas" style="display:none;"></span>
+        </div>
+        <div class="nav-item" data-page="relatorios">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+          <span class="nav-label">Relatórios</span>
+        </div>
+        <div class="nav-item" data-page="basedados">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div>
+          <span class="nav-label">Base de Dados</span>
+        </div>
+      </div>
+
+      <div class="sidebar-group">
+        <div class="sidebar-group-label">Administração</div>
+        <div class="nav-item" data-page="usuarios" id="nav-usuarios">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <span class="nav-label">Utilizadores</span>
+        </div>
+        <div class="nav-item" data-page="sincronizacao">
+          <div class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div>
+          <span class="nav-label">Sincronização</span>
+        </div>
+      </div>
+    </div>
+
+    <button class="sidebar-toggle-btn" id="sidebar-toggle">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+
+    <div class="sidebar-bottom">
+      <div class="sidebar-user" id="sidebar-user" title="Clique para sair">
+        <div class="user-avatar" id="sidebar-user-avatar">AZ</div>
+        <div class="user-info">
+          <div class="user-name" id="sidebar-user-name">Utilizador</div>
+          <div class="user-role" id="sidebar-user-role">Função</div>
+        </div>
+        <svg style="width:14px;height:14px;margin-left:auto;color:var(--text-muted);flex-shrink:0;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <div id="main-content">
+    <header id="header">
+      <div class="header-left">
+        <div>
+          <div class="header-page-title" id="header-page-title">Dashboard</div>
+          <div class="header-breadcrumb">
+            <span>HMM — Depósito</span>
+            <span>›</span>
+            <span id="header-breadcrumb-current">Dashboard</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="header-hospital">HOSPITAL MUNICIPAL DE MALANJE — DEPÓSITO</div>
+        <button class="header-btn" id="header-notif-btn" title="Alertas">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          <span class="header-notif-badge" id="header-notif-badge" style="display:none;"></span>
+        </button>
+        <div class="header-user">
+          <div class="header-user-avatar" id="header-user-avatar">AZ</div>
+          <div>
+            <div class="header-user-name" id="header-user-name">Utilizador</div>
+            <div class="header-user-role" id="header-user-role">Função</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="page-content">
+      <div class="page" id="page-dashboard"></div>
+      <div class="page" id="page-produtos"></div>
+      <div class="page" id="page-fornecedores"></div>
+      <div class="page" id="page-prateleiras"></div>
+      <div class="page" id="page-lotes"></div>
+      <div class="page" id="page-movimentacoes"></div>
+      <div class="page" id="page-alertas"></div>
+      <div class="page" id="page-relatorios"></div>
+      <div class="page" id="page-basedados"></div>
+      <div class="page" id="page-usuarios"></div>
+      <div class="page" id="page-sincronizacao"></div>
+    </main>
+  </div>
+</div>
+
+<!-- TOAST CONTAINER -->
+<div id="toast-container"></div>
+
+<!-- CONFIRM DIALOG -->
+<div id="confirm-overlay">
+  <div class="confirm-box">
+    <div class="confirm-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    </div>
+    <div class="confirm-title" id="confirm-title">Confirmar Acção</div>
+    <div class="confirm-msg" id="confirm-msg">Tem certeza?</div>
+    <div class="confirm-btns">
+      <button class="btn btn-secondary" id="confirm-no">Cancelar</button>
+      <button class="btn btn-danger" id="confirm-yes">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+(function(){
+  const origUpdate = window.updateAlertBadge;
+  window.updateAlertBadge = function() {
+    if(origUpdate) origUpdate();
+    const nb = document.getElementById('nav-badge-alertas');
+    const hb = document.getElementById('header-notif-badge');
+    const alerts = typeof getAlerts === 'function' ? getAlerts() : [];
+    const c = alerts.length;
+    if(nb){ nb.textContent = c||''; nb.style.display = c>0?'flex':'none'; }
+    if(hb){ hb.textContent = c||''; hb.style.display = c>0?'flex':'none'; }
+  };
+  const origSplash = window.startSplash;
+  window.startSplash = function() {
+    const fill = document.getElementById('splash-fill');
+    const pct = document.getElementById('splash-pct');
+    if(fill && pct) {
+      const obs = new MutationObserver(()=>{
+        const w = parseFloat(fill.style.width)||0;
+        pct.textContent = Math.round(w)+'%';
+      });
+      obs.observe(fill, {attributes:true, attributeFilter:['style']});
+    }
+    if(origSplash) origSplash();
+  };
+})();
+</script>
+</body>
+</html>
