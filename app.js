@@ -287,6 +287,117 @@ async function hashPassword(pwd) {
 
 // ===================== DATABASE =====================
 const DB_KEY = 'hmm_db_v2';
+const SETTINGS_KEY = 'hmm_settings_v2';
+
+// Load/save global settings (theme, db_mode, etc.)
+function loadSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)||'{}'); } catch { return {}; }
+}
+function saveSettings(s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+let appSettings = loadSettings();
+
+// ---- THEME (Lite / Dark) ----
+function applyTheme(theme) {
+  appSettings.theme = theme || 'dark';
+  saveSettings(appSettings);
+  document.body.classList.toggle('theme-light', appSettings.theme === 'light');
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) {
+    btn.title = appSettings.theme === 'light' ? 'Modo Escuro' : 'Modo Lite (Claro)';
+    btn.innerHTML = appSettings.theme === 'light'
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>`;
+  }
+}
+function toggleTheme() { applyTheme(appSettings.theme === 'light' ? 'dark' : 'light'); }
+
+// ---- XLSX FILE DATABASE ----
+let xlsxDirHandle = null; // File System Access API directory handle
+const XLSX_DB_FILENAME = 'bandmed_database.xlsx';
+const DB_MODE_KEY = 'hmm_db_mode'; // 'localstorage' | 'xlsx'
+
+function getDbMode() { return localStorage.getItem(DB_MODE_KEY) || 'localstorage'; }
+function setDbMode(m) { localStorage.setItem(DB_MODE_KEY, m); }
+
+async function pickXlsxFolder() {
+  if (!window.showDirectoryPicker) {
+    toast('error','Não suportado','O seu browser não suporta selecção de pasta. Use Chrome ou Edge.');
+    return false;
+  }
+  try {
+    xlsxDirHandle = await window.showDirectoryPicker({ mode:'readwrite' });
+    localStorage.setItem('hmm_xlsx_dir_name', xlsxDirHandle.name);
+    setDbMode('xlsx');
+    toast('success','Pasta seleccionada',`Base de dados: ${xlsxDirHandle.name}/${XLSX_DB_FILENAME}`);
+    return true;
+  } catch(e) {
+    if (e.name !== 'AbortError') toast('error','Erro ao seleccionar pasta', e.message);
+    return false;
+  }
+}
+
+async function reconnectXlsxFolder() {
+  if (!window.showDirectoryPicker) return false;
+  try {
+    xlsxDirHandle = await window.showDirectoryPicker({ mode:'readwrite' });
+    toast('success','Pasta reconectada', xlsxDirHandle.name);
+    return true;
+  } catch(e) {
+    if (e.name !== 'AbortError') toast('warning','Reconexão cancelada','A usar localStorage temporariamente.');
+    return false;
+  }
+}
+
+async function writeXlsxDb(data) {
+  if (!xlsxDirHandle) return false;
+  try {
+    const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
+    const sheets = tables.map(t => ({ name: t.charAt(0).toUpperCase()+t.slice(1), data: data[t] || [] }));
+    sheets.push({ name:'Meta', data:[{'Versao':'3.0','Exportado':new Date().toISOString()}] });
+    const bytes = XLSXio.write(sheets);
+    const fh = await xlsxDirHandle.getFileHandle(XLSX_DB_FILENAME, { create: true });
+    const writable = await fh.createWritable();
+    await writable.write(bytes);
+    await writable.close();
+    return true;
+  } catch(e) {
+    console.warn('writeXlsxDb error:', e);
+    return false;
+  }
+}
+
+async function readXlsxDb() {
+  if (!xlsxDirHandle) return null;
+  try {
+    const fh = await xlsxDirHandle.getFileHandle(XLSX_DB_FILENAME);
+    const file = await fh.getFile();
+    const buf = await file.arrayBuffer();
+    const sheets = XLSXio.read(buf);
+    const tableMap = {
+      'Produtos':'produtos','Fornecedores':'fornecedores','Prateleiras':'prateleiras',
+      'Lotes':'lotes','Movimentacoes':'movimentacoes','Kits':'kits'
+    };
+    const result = JSON.parse(JSON.stringify(DEFAULT_DB));
+    for (const [sn, rows] of Object.entries(sheets)) {
+      const key = tableMap[sn];
+      if (key && Array.isArray(rows) && rows.length && !rows[0].info) {
+        // Restore numeric ids and parse componentes for kits
+        result[key] = rows.map(r => {
+          const obj = {...r};
+          if (obj.id) obj.id = Number(obj.id);
+          if (key === 'kits' && typeof obj.componentes === 'string') {
+            try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
+          }
+          return obj;
+        });
+      }
+    }
+    return result;
+  } catch(e) {
+    if (e.name !== 'NotFoundError') console.warn('readXlsxDb error:', e);
+    return null;
+  }
+}
 
 // Empty database — credentials are NEVER in source code
 const DEFAULT_DB = {
@@ -295,7 +406,8 @@ const DEFAULT_DB = {
   fornecedores: [],
   prateleiras: [],
   lotes: [],
-  movimentacoes: []
+  movimentacoes: [],
+  kits: []
 };
 
 class Database {
@@ -305,22 +417,37 @@ class Database {
       const raw = localStorage.getItem(DB_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        // Ensure all tables exist
         const base = JSON.parse(JSON.stringify(DEFAULT_DB));
         return { ...base, ...parsed };
       }
       return JSON.parse(JSON.stringify(DEFAULT_DB));
     } catch { return JSON.parse(JSON.stringify(DEFAULT_DB)); }
   }
-  save() { localStorage.setItem(DB_KEY, JSON.stringify(this.data)); }
+  save() {
+    // Always save users to localStorage for security
+    localStorage.setItem(DB_KEY, JSON.stringify(this.data));
+    // Also async-write to xlsx if in xlsx mode
+    if (getDbMode() === 'xlsx' && xlsxDirHandle) {
+      writeXlsxDb(this.data).catch(()=>{});
+    }
+  }
+  async loadFromXlsx() {
+    const xdata = await readXlsxDb();
+    if (xdata) {
+      // Keep usuarios from localStorage (security)
+      const users = this.data.usuarios;
+      this.data = { ...JSON.parse(JSON.stringify(DEFAULT_DB)), ...xdata };
+      this.data.usuarios = users;
+    }
+  }
   nextId(table) {
     const items = this.data[table];
-    return items.length ? Math.max(...items.map(i => i.id)) + 1 : 1;
+    return items.length ? Math.max(...items.map(i => Number(i.id)||0)) + 1 : 1;
   }
   getAll(table, includeDeleted=false) {
     return (this.data[table]||[]).filter(r => includeDeleted || r.ativo !== false);
   }
-  getById(table, id) { return (this.data[table]||[]).find(r => r.id === id); }
+  getById(table, id) { return (this.data[table]||[]).find(r => Number(r.id) === Number(id)); }
   insert(table, item) {
     item.id = this.nextId(table);
     item.ativo = true;
@@ -329,7 +456,7 @@ class Database {
     return item;
   }
   update(table, id, updates) {
-    const idx = this.data[table].findIndex(r => r.id === id);
+    const idx = this.data[table].findIndex(r => Number(r.id) === Number(id));
     if (idx === -1) return false;
     this.data[table][idx] = { ...this.data[table][idx], ...updates };
     this.save();
@@ -341,13 +468,16 @@ class Database {
     this.save();
   }
   getStock(produtoId) {
-    const movs = this.getAll('movimentacoes').filter(m => m.produto_id === produtoId);
-    const entradas = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(m.quantidade||0),0);
-    const saidas = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(m.quantidade||0),0);
+    const movs = this.getAll('movimentacoes').filter(m => Number(m.produto_id) === Number(produtoId));
+    const entradas = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+    const saidas = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
     return { entradas, saidas, stock: entradas - saidas };
   }
   getShelfCount(prateleiraId) {
-    return this.getAll('produtos').filter(p=>p.prateleira_id===prateleiraId).length;
+    return this.getAll('produtos').filter(p=>Number(p.prateleira_id)===Number(prateleiraId)).length;
+  }
+  getShelfProducts(prateleiraId) {
+    return this.getAll('produtos').filter(p=>Number(p.prateleira_id)===Number(prateleiraId));
   }
 }
 
@@ -545,6 +675,13 @@ function initApp() {
     navUsuarios.style.display = currentUser.funcao === 'Administrador' ? 'flex' : 'none';
   }
 
+  // Apply saved theme
+  applyTheme(appSettings.theme || 'dark');
+
+  // Theme toggle button
+  const themeBtn = document.getElementById('theme-toggle-btn');
+  if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+
   setupSidebar();
   setupNavigation();
   updateAlertBadge();
@@ -587,7 +724,7 @@ const PAGE_TITLES = {
   dashboard:'Dashboard', produtos:'Cadastro de Produtos', fornecedores:'Fornecedores',
   prateleiras:'Prateleiras', lotes:'Cadastro de Lotes', movimentacoes:'Entradas / Saídas',
   alertas:'Alertas', relatorios:'Relatórios', basedados:'Base de Dados',
-  usuarios:'Utilizadores', sincronizacao:'Sincronização',
+  usuarios:'Utilizadores', sincronizacao:'Sincronização', kits:'Kits de Produtos',
 };
 
 function navigateTo(page) {
@@ -608,7 +745,7 @@ function renderPage(page) {
     dashboard:renderDashboard, produtos:renderProdutos, fornecedores:renderFornecedores,
     prateleiras:renderPrateleiras, lotes:renderLotes, movimentacoes:renderMovimentacoes,
     alertas:renderAlertas, relatorios:renderRelatorios, basedados:renderBaseDados,
-    usuarios:renderUsuarios, sincronizacao:renderSincronizacao,
+    usuarios:renderUsuarios, sincronizacao:renderSincronizacao, kits:renderKits,
   };
   if (renders[page]) renders[page]();
 }
@@ -1261,6 +1398,7 @@ function renderPrateleiras() {
               </td>
               <td>
                 <div style="display:flex;gap:5px;">
+                  <button class="btn btn-secondary btn-icon" title="Ver Produtos" onclick="viewShelfProducts(${p.id})">${ICONS.eye}</button>
                   <button class="btn btn-secondary btn-icon" onclick="openPrateleiraModal(${p.id})">${ICONS.edit}</button>
                   <button class="btn btn-danger btn-icon" onclick="deletePrateleira(${p.id})">${ICONS.trash}</button>
                 </div>
@@ -1302,6 +1440,20 @@ function renderPrateleiras() {
         </div>
       </div>
     </div>
+
+    <!-- Modal Ver Produtos da Prateleira -->
+    <div class="modal-overlay" id="modal-shelf-products">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <div class="modal-title">${ICONS.shelf} <span id="modal-shelf-title">Produtos da Prateleira</span></div>
+          <button class="modal-close" onclick="closeModal('modal-shelf-products')">${ICONS.x}</button>
+        </div>
+        <div class="modal-body" id="modal-shelf-body"></div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('modal-shelf-products')">Fechar</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -1337,6 +1489,34 @@ async function deletePrateleira(id) {
   const p = db.getById('prateleiras',id);
   const ok = await confirm('Eliminar Prateleira',`Deseja eliminar "${p?.nome}"?`);
   if (ok) { db.remove('prateleiras',id); toast('success','Prateleira eliminada'); renderPrateleiras(); }
+}
+
+function viewShelfProducts(pratId) {
+  const prat = db.getById('prateleiras', pratId);
+  const prods = db.getShelfProducts(pratId);
+  const el = document.getElementById('modal-shelf-products');
+  if (!el) return;
+  document.getElementById('modal-shelf-title').textContent = `Produtos — ${prat?.nome||'Prateleira'}`;
+  document.getElementById('modal-shelf-body').innerHTML = prods.length ? `
+    <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>Nome</th><th>Forma</th><th>Grupo</th><th>Stock Mín.</th><th>Stock Actual</th></tr></thead>
+      <tbody>
+        ${prods.map(p=>{
+          const {stock}=db.getStock(p.id);
+          return `<tr>
+            <td class="td-name">${p.nome}</td>
+            <td>${p.forma||'—'}</td>
+            <td>${p.grupo_farmacologico||'—'}</td>
+            <td>${p.stock_minimo||'—'}</td>
+            <td class="font-bold ${stock>0?'text-accent':'text-danger'}">${stock}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>
+  ` : `<div class="table-empty" style="padding:32px;">${ICONS.shelf}<p>Nenhum produto nesta prateleira</p></div>`;
+  el.classList.add('open');
 }
 
 // ===================== LOTES PAGE =====================
@@ -1487,15 +1667,47 @@ async function saveLote() {
   const btn=document.getElementById('btn-save-lote');
   setLoading(btn,true);
   await new Promise(r=>setTimeout(r,400));
+  const qtd=parseInt(document.getElementById('lote-quantidade').value)||0;
   const data={
     numero_lote:numero, produto_id:prodId,
     fornecedor_id:parseInt(document.getElementById('lote-fornecedor').value)||null,
-    quantidade:parseInt(document.getElementById('lote-quantidade').value)||0,
+    quantidade:qtd,
     validade:document.getElementById('lote-validade').value,
     codigo_barra:document.getElementById('lote-barcode').value,
   };
-  if(editingId){db.update('lotes',editingId,data);toast('success','Lote actualizado');}
-  else{db.insert('lotes',data);toast('success','Lote cadastrado');}
+  if(editingId){
+    const oldLote=db.getById('lotes',editingId);
+    db.update('lotes',editingId,data);
+    toast('success','Lote actualizado');
+    // If quantity changed (new stock added), create auto entrada
+    const oldQtd=oldLote?.quantidade||0;
+    if(qtd > oldQtd && qtd - oldQtd > 0){
+      const diff=qtd-oldQtd;
+      const forn=db.getById('fornecedores',data.fornecedor_id);
+      const novoLote=db.getById('lotes',editingId);
+      db.insert('movimentacoes',{
+        produto_id:prodId, tipo:'Entrada',
+        lote_id:editingId, quantidade:diff,
+        destino:`Entrada automática — Adição ao Lote ${numero}${forn?' (Forn: '+forn.nome+')':''}`,
+        data:today(), preco:null, auto:true
+      });
+      toast('info','Movimentação criada',`Entrada automática de ${diff} unid. registada`);
+    }
+  } else {
+    const novoLote=db.insert('lotes',data);
+    toast('success','Lote cadastrado');
+    // Auto-create entrada movimentação if quantity > 0
+    if(qtd > 0){
+      const forn=db.getById('fornecedores',data.fornecedor_id);
+      db.insert('movimentacoes',{
+        produto_id:prodId, tipo:'Entrada',
+        lote_id:novoLote.id, quantidade:qtd,
+        destino:`Entrada automática — Novo Lote ${numero}${forn?' | Forn: '+forn.nome:''}`,
+        data:today(), preco:null, auto:true
+      });
+      toast('info','Movimentação criada',`Entrada automática de ${qtd} unid. registada automaticamente`);
+    }
+  }
   setLoading(btn,false); closeModal('modal-lote'); renderLotes(); updateAlertBadge();
 }
 
@@ -1869,24 +2081,59 @@ function exportReportXLSX(key) {
 
 // ===================== BASE DE DADOS PAGE (XLSX) =====================
 function renderBaseDados() {
+  const mode = getDbMode();
+  const dirName = localStorage.getItem('hmm_xlsx_dir_name') || '(não seleccionada)';
   const totals = {
     produtos: db.getAll('produtos').length,
     fornecedores: db.getAll('fornecedores').length,
     prateleiras: db.getAll('prateleiras').length,
     lotes: db.getAll('lotes').length,
     movimentacoes: db.getAll('movimentacoes').length,
+    kits: db.getAll('kits').length,
   };
   document.getElementById('page-basedados').innerHTML = `
     <div class="page-header">
       <div>
         <div class="page-title">${ICONS.database} Base de Dados</div>
-        <div class="page-title-sub">Gestão e manutenção da base de dados do sistema</div>
+        <div class="page-title-sub">Gestão, armazenamento e manutenção da base de dados do sistema</div>
       </div>
     </div>
+
+    <!-- STORAGE MODE SELECTOR -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header"><div class="card-title">${ICONS.settings} Modo de Armazenamento</div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px;">
+        <div class="db-mode-option ${mode==='localstorage'?'active':''}" onclick="switchDbMode('localstorage')" style="cursor:pointer;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(52,152,219,0.15);display:flex;align-items:center;justify-content:center;color:var(--info);">${ICONS.shield}</div>
+            <div>
+              <div style="font-weight:700;font-size:14px;color:var(--text-primary)">LocalStorage</div>
+              <div style="font-size:11px;color:var(--text-muted)">Armazenamento interno do browser</div>
+            </div>
+            ${mode==='localstorage'?`<span class="badge badge-success" style="margin-left:auto;">Activo</span>`:''}
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);">Dados guardados no browser. Rápido, sempre disponível offline. Limitado ao browser actual.</div>
+        </div>
+        <div class="db-mode-option ${mode==='xlsx'?'active':''}" onclick="switchDbMode('xlsx')" style="cursor:pointer;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(0,184,148,0.15);display:flex;align-items:center;justify-content:center;color:var(--accent);">${ICONS.download}</div>
+            <div>
+              <div style="font-weight:700;font-size:14px;color:var(--text-primary)">Ficheiro .XLSX</div>
+              <div style="font-size:11px;color:var(--text-muted)">Base de dados em arquivo Excel</div>
+            </div>
+            ${mode==='xlsx'?`<span class="badge badge-success" style="margin-left:auto;">Activo</span>`:''}
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);">Dados guardados num ficheiro Excel na sua pasta. Portável e editável externamente.</div>
+          ${mode==='xlsx'?`<div style="margin-top:8px;padding:8px;background:var(--bg-input);border-radius:6px;font-size:11px;color:var(--accent);word-break:break-all;">${ICONS.map_pin} Pasta: <strong>${dirName}</strong> / ${XLSX_DB_FILENAME}</div>`:''}
+          ${mode==='xlsx'&&!xlsxDirHandle?`<button class="btn btn-warning" style="margin-top:8px;font-size:11px;padding:6px 10px;" onclick="doReconnectXlsx(event)">Reconectar Pasta</button>`:''}
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2" style="gap:20px;">
       <div>
         <div class="card" style="margin-bottom:20px;">
-          <div class="card-header"><div class="card-title">${ICONS.info} Informações da Base de Dados</div></div>
+          <div class="card-header"><div class="card-title">${ICONS.info} Estatísticas da Base de Dados</div></div>
           <div class="db-stats-grid">
             ${Object.entries(totals).map(([k,v])=>`
               <div class="db-stat">
@@ -1895,27 +2142,27 @@ function renderBaseDados() {
               </div>
             `).join('')}
             <div class="db-stat">
-              <div class="db-stat-val" style="font-size:13px;">localStorage</div>
-              <div class="db-stat-lbl">Armazenamento</div>
+              <div class="db-stat-val" style="font-size:11px;">${mode==='xlsx'?'XLSX':'localStorage'}</div>
+              <div class="db-stat-lbl">Modo Activo</div>
             </div>
           </div>
           <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">
-            ${ICONS.info} Base de dados armazenada localmente no browser. Última actualização: ${new Date().toLocaleString('pt-AO')}.
+            ${ICONS.info} Última actualização: ${new Date().toLocaleString('pt-AO')}.
           </div>
         </div>
 
         <div class="card">
-          <div class="card-header"><div class="card-title">${ICONS.download} Exportar / Importar (formato .XLSX)</div></div>
+          <div class="card-header"><div class="card-title">${ICONS.download} Exportar / Importar (.XLSX)</div></div>
           <div class="db-action-grid">
             <button class="db-action-btn" onclick="exportDBXLSX()">
               <div class="db-action-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);">${ICONS.download}</div>
               <div class="db-action-title">Exportar Base de Dados</div>
-              <div class="db-action-desc">Guardar todos os dados em ficheiro .XLSX</div>
+              <div class="db-action-desc">Guardar todos os dados em ficheiro .XLSX (backup)</div>
             </button>
             <label class="db-action-btn" style="cursor:pointer;">
               <div class="db-action-icon" style="background:rgba(52,152,219,0.1);color:var(--info);">${ICONS.upload}</div>
               <div class="db-action-title">Importar Base de Dados</div>
-              <div class="db-action-desc">Carregar dados de um ficheiro .XLSX</div>
+              <div class="db-action-desc">Restaurar dados de um ficheiro .XLSX</div>
               <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="importDBXLSX(event)">
             </label>
           </div>
@@ -1939,17 +2186,16 @@ function renderBaseDados() {
           <div style="display:flex;flex-direction:column;gap:10px;">
             ${[
               ['Sistema','Hospital Municipal de Malanje','ok'],
-              ['Versão','v2.0.0','info'],
-              ['Modo','Offline/Online','ok'],
+              ['Versão','v3.0.0','info'],
+              ['Armazenamento', mode==='xlsx'?`XLSX (${dirName})`:'localStorage','ok'],
               ['Segurança','SHA-256 Passwords','ok'],
-              ['Exportação','Exclusivamente .XLSX','info'],
               ['Utilizador',currentUser?.nome||'—','info'],
               ['Função',currentUser?.funcao||'—','info'],
               ['Sessão',new Date().toLocaleString('pt-AO'),'info'],
             ].map(([l,v,t])=>`
               <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
                 <span style="color:var(--text-muted)">${l}</span>
-                <span class="text-${t==='ok'?'accent':t==='info'?'secondary':'danger'}" style="font-weight:500;">${v}</span>
+                <span class="text-${t==='ok'?'accent':t==='info'?'secondary':'danger'}" style="font-weight:500;text-align:right;max-width:60%;word-break:break-all;">${v}</span>
               </div>
             `).join('')}
           </div>
@@ -1959,14 +2205,53 @@ function renderBaseDados() {
   `;
 }
 
+async function switchDbMode(mode) {
+  if (mode === getDbMode()) return;
+  if (mode === 'xlsx') {
+    const ok = await confirm('Mudar para Ficheiro .XLSX',
+      'Os dados serão guardados num ficheiro Excel na pasta que escolher. Os utilizadores mantêm-se sempre no browser por segurança. Continuar?');
+    if (!ok) return;
+    const picked = await pickXlsxFolder();
+    if (picked) {
+      // Write current data to xlsx immediately
+      await writeXlsxDb(db.data);
+      toast('success','Modo XLSX activo','Base de dados será guardada no ficheiro Excel seleccionado');
+      renderBaseDados();
+    }
+  } else {
+    const ok = await confirm('Mudar para LocalStorage','Os dados voltarão a ser guardados no browser. Continuar?');
+    if (!ok) return;
+    setDbMode('localstorage');
+    xlsxDirHandle = null;
+    db.save();
+    toast('success','Modo localStorage activo');
+    renderBaseDados();
+  }
+}
+
+async function doReconnectXlsx(e) {
+  e.stopPropagation();
+  const ok = await reconnectXlsxFolder();
+  if (ok) {
+    // Read from xlsx and merge
+    await db.loadFromXlsx();
+    renderBaseDados();
+    updateAlertBadge();
+  }
+}
+
 function exportDBXLSX() {
   try {
-    const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes'];
+    const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
     const sheets = tables.map(t => ({
       name: t.charAt(0).toUpperCase()+t.slice(1),
-      data: db.getAll(t, true)
+      data: db.getAll(t, true).map(r => {
+        const obj = {...r};
+        if (t === 'kits' && Array.isArray(obj.componentes)) obj.componentes = JSON.stringify(obj.componentes);
+        return obj;
+      })
     }));
-    sheets.push({ name: 'Meta', data: [{'Sistema':'HMM Deposito de Medicamentos','Versao':'2.0','Exportado em':new Date().toLocaleString('pt-AO'),'Utilizador':currentUser?.nome||'—'}] });
+    sheets.push({ name: 'Meta', data: [{'Sistema':'HMM Deposito de Medicamentos','Versao':'3.0','Exportado em':new Date().toLocaleString('pt-AO'),'Utilizador':currentUser?.nome||'—'}] });
     if (XLSXio.download(sheets, `hmm_database_${today()}.xlsx`)) {
       toast('success','Base de dados exportada','Ficheiro .XLSX gerado com sucesso');
     }
@@ -1985,13 +2270,20 @@ function importDBXLSX(event) {
       const tableMap = {
         'Produtos':'produtos','Fornecedores':'fornecedores',
         'Prateleiras':'prateleiras','Lotes':'lotes',
-        'Movimentacoes':'movimentacoes','Movimentações':'movimentacoes'
+        'Movimentacoes':'movimentacoes','Movimentações':'movimentacoes','Kits':'kits'
       };
       let imported = 0;
       for (const [sheetName, data] of Object.entries(sheets)) {
         const key = tableMap[sheetName];
         if (key && data.length && !data[0].info) {
-          db.data[key] = data;
+          db.data[key] = data.map(r => {
+            const obj = {...r};
+            if (obj.id) obj.id = Number(obj.id);
+            if (key === 'kits' && typeof obj.componentes === 'string') {
+              try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
+            }
+            return obj;
+          });
           imported++;
         }
       }
@@ -2572,3 +2864,317 @@ document.addEventListener('DOMContentLoaded', () => {
   startSplash();
   setupLogin();
 });
+
+// ===================== KITS PAGE =====================
+let kitSearch = '';
+let kitEditingId = null;
+let kitComponents = []; // [{produto_id, quantidade}]
+
+function renderKits() {
+  const kits = db.getAll('kits');
+  const filtered = kitSearch ? kits.filter(k=>k.nome.toLowerCase().includes(kitSearch.toLowerCase())) : kits;
+  const produtos = db.getAll('produtos');
+
+  document.getElementById('page-kits').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">${ICONS.layers} Kits de Produtos</div>
+        <div class="page-title-sub">Cadastrar combinações de medicamentos vendidos/dispensados como um único kit</div>
+      </div>
+      <div class="page-actions">
+        <button class="btn btn-primary" onclick="openKitModal()">${ICONS.plus}<span class="btn-text-content">Novo Kit</span></button>
+      </div>
+    </div>
+
+    <!-- INFO BOX -->
+    <div style="background:rgba(0,184,148,0.07);border:1px solid rgba(0,184,148,0.2);border-radius:var(--radius-sm);padding:12px 16px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+      ${ICONS.info}
+      <span>Um <strong>Kit</strong> agrupa dois ou mais medicamentos num único produto combinado. Ao registar uma saída de um Kit, o sistema debita automaticamente cada componente individualmente nas movimentações.</span>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">${ICONS.list} Kits Cadastrados <span class="chip">${filtered.length}</span></div>
+        <div class="table-actions">
+          <div class="search-wrap">
+            <span class="search-icon">${ICONS.search}</span>
+            <input class="search-input" placeholder="Pesquisar kit..." value="${kitSearch}" oninput="kitSearch=this.value;renderKits()">
+          </div>
+        </div>
+      </div>
+      <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>Nome do Kit</th><th>Componentes</th><th>Descrição</th><th>Saídas Registadas</th><th>Acções</th></tr></thead>
+        <tbody>
+          ${filtered.length ? filtered.map(k=>{
+            const comps = Array.isArray(k.componentes) ? k.componentes : [];
+            const saidas = db.getAll('movimentacoes').filter(m=>m.kit_id===k.id&&m.tipo==='Saída').length;
+            return `<tr>
+              <td class="td-name">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <div style="width:30px;height:30px;border-radius:8px;background:rgba(155,89,182,0.2);display:flex;align-items:center;justify-content:center;color:#9B59B6;flex-shrink:0;">${ICONS.layers}</div>
+                  ${k.nome}
+                </div>
+              </td>
+              <td>
+                ${comps.map(c=>{
+                  const p=db.getById('produtos',c.produto_id);
+                  return `<span class="chip" style="margin:2px;">${p?p.nome:'?'} (${c.quantidade})</span>`;
+                }).join('')}
+              </td>
+              <td style="color:var(--text-muted);font-size:12px;">${k.descricao||'—'}</td>
+              <td class="font-bold text-danger">${saidas}</td>
+              <td>
+                <div style="display:flex;gap:5px;">
+                  <button class="btn btn-primary btn-icon" title="Registar Saída de Kit" onclick="openKitSaidaModal(${k.id})">${ICONS.arrow_down}</button>
+                  <button class="btn btn-secondary btn-icon" onclick="openKitModal(${k.id})">${ICONS.edit}</button>
+                  <button class="btn btn-danger btn-icon" onclick="deleteKit(${k.id})">${ICONS.trash}</button>
+                </div>
+              </td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="5"><div class="table-empty">${ICONS.layers}<p>Nenhum kit cadastrado</p></div></td></tr>`}
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <!-- MODAL CRIAR/EDITAR KIT -->
+    <div class="modal-overlay" id="modal-kit">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <div class="modal-title">${ICONS.layers} <span id="modal-kit-title">Novo Kit</span></div>
+          <button class="modal-close" onclick="closeModal('modal-kit')">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid form-grid-2" style="margin-bottom:16px;">
+            <div class="field-wrap form-grid-full">
+              <label class="field-label">Nome do Kit <span class="field-req">*</span></label>
+              <input class="field-input" id="kit-nome" placeholder="Ex: Kit Amoxicilina + Ampicilina">
+            </div>
+            <div class="field-wrap form-grid-full">
+              <label class="field-label">Descrição</label>
+              <input class="field-input" id="kit-descricao" placeholder="Ex: Tratamento combinado de infecções bacterianas">
+            </div>
+          </div>
+
+          <div style="margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;display:flex;align-items:center;gap:6px;">${ICONS.pill} Componentes do Kit <span class="field-req">*</span></div>
+            <div id="kit-components-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;"></div>
+            <div style="display:flex;gap:8px;align-items:flex-end;">
+              <div class="field-wrap" style="flex:1;margin:0;">
+                <label class="field-label" style="font-size:11px;">Produto</label>
+                <select class="field-select" id="kit-add-prod">
+                  <option value="">Seleccionar produto...</option>
+                  ${produtos.map(p=>`<option value="${p.id}">${p.nome}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field-wrap" style="width:100px;margin:0;">
+                <label class="field-label" style="font-size:11px;">Qtd</label>
+                <input class="field-input" id="kit-add-qtd" type="number" min="1" value="1" placeholder="1">
+              </div>
+              <button class="btn btn-secondary" style="height:38px;white-space:nowrap;" onclick="addKitComponent()">${ICONS.plus} Adicionar</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('modal-kit')">Cancelar</button>
+          <button class="btn btn-primary" id="btn-save-kit" onclick="saveKit()">
+            <span class="btn-spin"></span><span class="btn-text-content">${ICONS.check} Guardar Kit</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL SAÍDA DE KIT -->
+    <div class="modal-overlay" id="modal-kit-saida">
+      <div class="modal">
+        <div class="modal-header">
+          <div class="modal-title">${ICONS.arrow_down} Saída de Kit</div>
+          <button class="modal-close" onclick="closeModal('modal-kit-saida')">${ICONS.x}</button>
+        </div>
+        <div class="modal-body">
+          <div id="modal-kit-saida-info" style="background:rgba(155,89,182,0.08);border:1px solid rgba(155,89,182,0.2);border-radius:var(--radius-sm);padding:12px;margin-bottom:16px;font-size:13px;color:var(--text-secondary);"></div>
+          <div class="form-grid form-grid-2">
+            <div class="field-wrap">
+              <label class="field-label">${ICONS.package} Quantidade de Kits <span class="field-req">*</span></label>
+              <input class="field-input" id="kit-saida-qtd" type="number" min="1" value="1" placeholder="Ex: 1">
+            </div>
+            <div class="field-wrap">
+              <label class="field-label">${ICONS.calendar} Data</label>
+              <input class="field-input" id="kit-saida-data" type="date" value="${new Date().toISOString().split('T')[0]}">
+            </div>
+            <div class="field-wrap form-grid-full">
+              <label class="field-label">${ICONS.map_pin} Destino</label>
+              <input class="field-input" id="kit-saida-destino" placeholder="Ex: Enfermaria A, Paciente...">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="closeModal('modal-kit-saida')">Cancelar</button>
+          <button class="btn btn-primary" id="btn-save-kit-saida" onclick="saveKitSaida()">
+            <span class="btn-spin"></span><span class="btn-text-content">${ICONS.check} Registar Saída</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderKitComponentsList() {
+  const produtos = db.getAll('produtos');
+  const el = document.getElementById('kit-components-list');
+  if (!el) return;
+  if (!kitComponents.length) {
+    el.innerHTML = `<div style="font-size:12px;color:var(--text-muted);padding:8px;border:1px dashed var(--border);border-radius:6px;text-align:center;">Nenhum componente adicionado. Adicione pelo menos 2 produtos.</div>`;
+    return;
+  }
+  el.innerHTML = kitComponents.map((c,i)=>{
+    const p = db.getById('produtos', c.produto_id) || produtos.find(x=>Number(x.id)===Number(c.produto_id));
+    const {stock} = db.getStock(c.produto_id);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-input);border-radius:var(--radius-xs);border:1px solid var(--border);">
+      <div style="color:#9B59B6;">${ICONS.pill}</div>
+      <span style="flex:1;font-weight:600;font-size:13px;">${p?p.nome:`Produto #${c.produto_id}`}</span>
+      <span class="chip">Qtd: ${c.quantidade}</span>
+      <span style="font-size:11px;color:${stock>0?'var(--accent)':'var(--danger)'}">Stock: ${stock}</span>
+      <button class="btn btn-danger btn-icon" style="width:28px;height:28px;" onclick="removeKitComponent(${i})">${ICONS.x}</button>
+    </div>`;
+  }).join('');
+}
+
+function addKitComponent() {
+  const prodId = parseInt(document.getElementById('kit-add-prod').value);
+  const qtd = parseInt(document.getElementById('kit-add-qtd').value)||1;
+  if (!prodId) { toast('error','Seleccione um produto'); return; }
+  if (kitComponents.find(c=>Number(c.produto_id)===prodId)) { toast('warning','Produto já adicionado','Este produto já está no kit. Edite a quantidade existente.'); return; }
+  kitComponents.push({produto_id:prodId, quantidade:qtd});
+  renderKitComponentsList();
+  document.getElementById('kit-add-prod').value='';
+  document.getElementById('kit-add-qtd').value='1';
+}
+
+function removeKitComponent(idx) {
+  kitComponents.splice(idx,1);
+  renderKitComponentsList();
+}
+
+function openKitModal(id=null) {
+  kitEditingId = id;
+  kitComponents = [];
+  document.getElementById('modal-kit-title').textContent = id ? 'Editar Kit' : 'Novo Kit';
+  if (id) {
+    const k = db.getById('kits', id);
+    if (k) {
+      document.getElementById('kit-nome').value = k.nome||'';
+      document.getElementById('kit-descricao').value = k.descricao||'';
+      kitComponents = Array.isArray(k.componentes) ? [...k.componentes.map(c=>({...c}))] : [];
+    }
+  } else {
+    document.getElementById('kit-nome').value='';
+    document.getElementById('kit-descricao').value='';
+  }
+  document.getElementById('modal-kit').classList.add('open');
+  renderKitComponentsList();
+}
+
+async function saveKit() {
+  const nome = document.getElementById('kit-nome').value.trim();
+  if (!nome) { toast('error','Nome obrigatório'); return; }
+  if (kitComponents.length < 1) { toast('error','Adicione pelo menos 1 componente ao kit'); return; }
+  const btn = document.getElementById('btn-save-kit');
+  setLoading(btn,true);
+  await new Promise(r=>setTimeout(r,300));
+  const data = {
+    nome,
+    descricao: document.getElementById('kit-descricao').value,
+    componentes: kitComponents.map(c=>({produto_id:Number(c.produto_id),quantidade:Number(c.quantidade)}))
+  };
+  if (kitEditingId) {
+    db.update('kits', kitEditingId, data);
+    toast('success','Kit actualizado');
+  } else {
+    db.insert('kits', data);
+    toast('success','Kit cadastrado com sucesso');
+  }
+  setLoading(btn,false);
+  closeModal('modal-kit');
+  renderKits();
+}
+
+async function deleteKit(id) {
+  const k = db.getById('kits',id);
+  const ok = await confirm('Eliminar Kit',`Deseja eliminar o kit "${k?.nome}"?`);
+  if (ok) { db.remove('kits',id); toast('success','Kit eliminado'); renderKits(); }
+}
+
+let kitSaidaId = null;
+function openKitSaidaModal(kitId) {
+  kitSaidaId = kitId;
+  const k = db.getById('kits', kitId);
+  if (!k) return;
+  const comps = Array.isArray(k.componentes) ? k.componentes : [];
+  const infoEl = document.getElementById('modal-kit-saida-info');
+  if (infoEl) {
+    infoEl.innerHTML = `
+      <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px;">${ICONS.layers} ${k.nome}</div>
+      <div style="font-size:12px;">Componentes que serão debitados individualmente:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">
+        ${comps.map(c=>{
+          const p=db.getById('produtos',c.produto_id);
+          const {stock}=db.getStock(c.produto_id);
+          return `<span class="chip" style="background:rgba(155,89,182,0.15);color:#9B59B6;">${p?p.nome:'?'} × ${c.quantidade} <span style="color:${stock>=c.quantidade?'var(--accent)':'var(--danger)'};">(stock: ${stock})</span></span>`;
+        }).join('')}
+      </div>`;
+  }
+  document.getElementById('kit-saida-qtd').value='1';
+  document.getElementById('kit-saida-destino').value='';
+  document.getElementById('kit-saida-data').value=new Date().toISOString().split('T')[0];
+  document.getElementById('modal-kit-saida').classList.add('open');
+}
+
+async function saveKitSaida() {
+  const k = db.getById('kits', kitSaidaId);
+  if (!k) return;
+  const qtdKits = parseInt(document.getElementById('kit-saida-qtd').value)||1;
+  const destino = document.getElementById('kit-saida-destino').value;
+  const data = document.getElementById('kit-saida-data').value || new Date().toISOString().split('T')[0];
+  const comps = Array.isArray(k.componentes) ? k.componentes : [];
+
+  // Stock check
+  for (const c of comps) {
+    const {stock} = db.getStock(c.produto_id);
+    const p = db.getById('produtos', c.produto_id);
+    const needed = c.quantidade * qtdKits;
+    if (stock < needed) {
+      toast('error','Stock insuficiente',`${p?p.nome:`Produto #${c.produto_id}`}: Necessário ${needed}, disponível ${stock}`);
+      return;
+    }
+  }
+
+  const btn = document.getElementById('btn-save-kit-saida');
+  setLoading(btn,true);
+  await new Promise(r=>setTimeout(r,400));
+
+  // Create individual saída for each component
+  for (const c of comps) {
+    const p = db.getById('produtos', c.produto_id);
+    db.insert('movimentacoes', {
+      produto_id: c.produto_id,
+      tipo: 'Saída',
+      lote_id: null,
+      quantidade: c.quantidade * qtdKits,
+      destino: `Kit: ${k.nome}${destino?' → '+destino:''}`,
+      data,
+      preco: null,
+      kit_id: kitSaidaId,
+      auto: true
+    });
+  }
+
+  toast('success','Saída de Kit registada',
+    `${qtdKits} kit(s) de "${k.nome}" debitados. ${comps.length} movimentações criadas automaticamente.`);
+
+  setLoading(btn,false);
+  closeModal('modal-kit-saida');
+  renderKits();
+  updateAlertBadge();
+}

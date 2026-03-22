@@ -369,17 +369,7 @@ html, body {
 }
 .sidebar-logo-sub { font-size: 10px; color: var(--accent); white-space: nowrap; }
 
-.sidebar-toggle-btn {
-  position: absolute; bottom: 80px; right: -14px;
-  width: 28px; height: 28px;
-  background: var(--bg-card); border: 1px solid var(--border);
-  border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  cursor: pointer; z-index: 101; color: var(--text-secondary);
-  transition: var(--transition);
-}
-.sidebar-toggle-btn:hover { background: var(--accent); color: white; border-color: var(--accent); }
-.sidebar-toggle-btn svg { width: 13px; height: 13px; transition: transform 0.3s; }
-#sidebar.collapsed .sidebar-toggle-btn svg { transform: rotate(180deg); }
+/* sidebar-toggle-btn styles moved to V3 ADDITIONS section below */
 
 .sidebar-nav {
   flex: 1; overflow-y: auto; overflow-x: hidden;
@@ -1088,4 +1078,148 @@ tbody td {
 @media (max-width: 900px) {
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid-3 { grid-template-columns: 1fr 1fr; }
+}
+
+/* ============================================================
+   BANDMED V3 — ADDITIONS
+   - Modo Lite (tema claro)
+   - Sidebar toggle no topo
+   - DB Mode selector
+   - Kits
+   - Modal larger
+   ============================================================ */
+
+/* ====== MODO LITE (TEMA CLARO) ====== */
+body.theme-light {
+  --primary: #1565C0;
+  --primary-light: #1976D2;
+  --primary-dark: #0D47A1;
+  --accent: #00897B;
+  --accent-light: #00A896;
+  --accent-dark: #00695C;
+  --danger: #C62828;
+  --danger-light: #E53935;
+  --warning: #E65100;
+  --warning-light: #FF6D00;
+  --info: #0277BD;
+  --success: #2E7D32;
+  --bg-dark: #EEF2F7;
+  --bg-panel: #FFFFFF;
+  --bg-card: #F5F8FC;
+  --bg-input: #EEF2F7;
+  --text-primary: #0D1B2A;
+  --text-secondary: #2C4A6E;
+  --text-muted: #5A7A9B;
+  --border: #C8D8E8;
+  --border-light: #B0C4D8;
+  --shadow: 0 4px 24px rgba(0,0,0,0.12);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+body.theme-light #app { background: var(--bg-dark); }
+body.theme-light #sidebar { background: var(--bg-panel); border-right-color: var(--border); }
+body.theme-light #header { background: var(--bg-panel); border-bottom-color: var(--border); }
+body.theme-light .nav-item { color: var(--text-secondary); }
+body.theme-light .nav-item:hover { background: rgba(0,137,123,0.08); color: var(--text-primary); }
+body.theme-light .nav-item.active { background: linear-gradient(135deg,rgba(0,137,123,0.12),rgba(0,137,123,0.06)); color: var(--accent); border-color: rgba(0,137,123,0.25); }
+body.theme-light .card, body.theme-light .table-wrap, body.theme-light .chart-card, body.theme-light .sync-card { background: var(--bg-panel); border-color: var(--border); }
+body.theme-light .field-input, body.theme-light .field-select { background: var(--bg-input); border-color: var(--border); color: var(--text-primary); }
+body.theme-light .field-input::placeholder { color: var(--text-muted); }
+body.theme-light table thead th { background: var(--bg-input); color: var(--text-secondary); border-color: var(--border); }
+body.theme-light table tbody tr { border-color: var(--border); }
+body.theme-light table tbody tr:hover { background: rgba(0,137,123,0.04); }
+body.theme-light .modal { background: var(--bg-panel); border-color: var(--border); }
+body.theme-light .modal-header { border-color: var(--border); background: var(--bg-card); }
+body.theme-light .modal-footer { border-color: var(--border); background: var(--bg-card); }
+body.theme-light .sidebar-toggle-btn { background: var(--bg-card); border-color: var(--border); color: var(--text-secondary); }
+body.theme-light .sidebar-toggle-btn:hover { background: var(--accent); color: #fff; }
+body.theme-light .header-btn { background: var(--bg-input); color: var(--text-secondary); border-color: var(--border); }
+body.theme-light .header-btn:hover { background: var(--border); color: var(--text-primary); }
+body.theme-light .chip { background: rgba(0,137,123,0.12); color: var(--accent); }
+body.theme-light .search-wrap { background: var(--bg-input); border-color: var(--border); }
+body.theme-light .search-input { background: transparent; color: var(--text-primary); }
+body.theme-light .select-filter { background: var(--bg-input); border-color: var(--border); color: var(--text-primary); }
+body.theme-light .splash-particle { opacity: 0.08; }
+body.theme-light .sidebar-group-label { color: var(--text-muted); }
+body.theme-light .sidebar-user { border-top-color: var(--border); }
+body.theme-light .user-info .user-name, body.theme-light .user-info .user-role { color: var(--text-secondary); }
+body.theme-light .db-stat { background: var(--bg-input); border-color: var(--border); }
+body.theme-light .db-action-btn { background: var(--bg-card); border-color: var(--border); }
+body.theme-light .db-action-btn:hover { border-color: var(--accent); background: rgba(0,137,123,0.05); }
+body.theme-light .alert-item { border-color: var(--border); }
+body.theme-light .report-card { background: var(--bg-card); border-color: var(--border); }
+body.theme-light .nav-badge { background: var(--danger); }
+body.theme-light .toast { background: var(--bg-panel); border-color: var(--border); }
+body.theme-light .confirm-box { background: var(--bg-panel); border-color: var(--border); }
+body.theme-light .script-code { background: var(--bg-dark); border-color: var(--border); color: var(--accent); }
+body.theme-light .page-title { color: var(--text-primary); }
+body.theme-light .page-title-sub { color: var(--text-muted); }
+body.theme-light .header-page-title { color: var(--text-primary); }
+body.theme-light .header-breadcrumb { color: var(--text-muted); }
+body.theme-light .stat-card { background: var(--bg-panel); border-color: var(--border); }
+body.theme-light .stat-label, body.theme-light .stat-sub { color: var(--text-muted); }
+
+/* ====== SIDEBAR TOGGLE — REPOSICIONADO NO TOPO ====== */
+.sidebar-logo {
+  position: relative;
+}
+.sidebar-toggle-btn {
+  /* Override: now it lives inside .sidebar-logo */
+  position: static;
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  background: rgba(0,184,148,0.1);
+  border: 1.5px solid rgba(0,184,148,0.3);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--accent);
+  transition: var(--transition);
+  z-index: 101;
+}
+.sidebar-toggle-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  box-shadow: 0 0 10px rgba(0,184,148,0.4);
+}
+.sidebar-toggle-btn svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 0.3s;
+}
+#sidebar.collapsed .sidebar-toggle-btn svg { transform: rotate(180deg); }
+#sidebar.collapsed .sidebar-toggle-btn { margin: 0 auto; }
+
+/* ====== DB MODE OPTION CARDS ====== */
+.db-mode-option {
+  padding: 14px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+  background: var(--bg-card);
+}
+.db-mode-option:hover { border-color: var(--accent); background: rgba(0,184,148,0.04); }
+.db-mode-option.active {
+  border-color: var(--accent);
+  background: rgba(0,184,148,0.07);
+  box-shadow: 0 0 0 3px rgba(0,184,148,0.12);
+}
+
+/* ====== MODAL LG ====== */
+.modal-lg {
+  max-width: 680px;
+  width: 95vw;
+}
+
+/* ====== KITS PAGE ====== */
+.kit-component-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 20px;
+  background: rgba(155,89,182,0.12); color: #9B59B6;
+  font-size: 12px; font-weight: 600;
 }
