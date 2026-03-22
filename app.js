@@ -48,8 +48,123 @@ const XLSXio = (() => {
     return cat(...locals,...cds,eocd);
   }
 
-  /* --- Ler ZIP --- */
-  function zipRead(buf){
+  /* --- Descompressão DEFLATE (para ficheiros Excel) --- */
+  async function inflateRaw(data){
+    // Uses native DecompressionStream (Chrome 103+, Edge 103+, Firefox 113+)
+    if(typeof DecompressionStream !== 'undefined'){
+      try{
+        const ds=new DecompressionStream('deflate-raw');
+        const writer=ds.writable.getWriter();
+        const reader=ds.readable.getReader();
+        writer.write(data);
+        writer.close();
+        const chunks=[];
+        while(true){const{done,value}=await reader.read();if(done)break;chunks.push(value);}
+        const total=chunks.reduce((s,c)=>s+c.length,0);
+        const out=new Uint8Array(total);let off=0;
+        for(const c of chunks){out.set(c,off);off+=c.length;}
+        return out;
+      }catch(e){console.warn('DecompressionStream falhou:',e);}
+    }
+    // Fallback: pure-JS DEFLATE (subset — handles typical Excel files)
+    return inflatePure(data);
+  }
+
+  /* Pure-JS inflate — handles fixed + dynamic Huffman, required for older browsers */
+  function inflatePure(data){
+    let pos=0,bits=0,buf=0;
+    function rb(n){while(bits<n){buf|=data[pos++]<<bits;bits+=8;}const v=buf&((1<<n)-1);buf>>>=n;bits-=n;return v;}
+    function align(){bits=0;buf=0;}
+
+    function buildTree(lens){
+      const maxBits=Math.max(...lens,0);
+      const counts=new Array(maxBits+1).fill(0);
+      for(const l of lens)if(l)counts[l]++;
+      const nextCode=new Array(maxBits+2).fill(0);
+      for(let i=1;i<=maxBits;i++)nextCode[i+1]=(nextCode[i]+counts[i])<<1;
+      const table=new Map();
+      for(let sym=0;sym<lens.length;sym++){
+        const l=lens[sym];if(!l)continue;
+        const code=nextCode[l]++;
+        let key=0;for(let i=l-1;i>=0;i--)key|=((code>>i)&1)<<(l-1-i);
+        table.set(l*65536+key,sym);
+      }
+      return{table,maxBits};
+    }
+
+    function readSym(tree){
+      let key=0,len=0;
+      while(len<=tree.maxBits){
+        key=(key<<1)|rb(1);len++;
+        const sym=tree.table.get(len*65536+key);
+        if(sym!==undefined)return sym;
+      }
+      throw new Error('inflate: bad symbol');
+    }
+
+    const FIXED_LIT_LENS=[];
+    for(let i=0;i<144;i++)FIXED_LIT_LENS.push(8);
+    for(let i=144;i<256;i++)FIXED_LIT_LENS.push(9);
+    for(let i=256;i<280;i++)FIXED_LIT_LENS.push(7);
+    for(let i=280;i<288;i++)FIXED_LIT_LENS.push(8);
+    const FIXED_DIST_LENS=new Array(32).fill(5);
+    const fixedLit=buildTree(FIXED_LIT_LENS);
+    const fixedDist=buildTree(FIXED_DIST_LENS);
+
+    const LENGTH_BASE=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+    const LENGTH_EXTRA=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+    const DIST_BASE=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+    const DIST_EXTRA=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+
+    const out=[];
+    let bfinal=0;
+    do{
+      bfinal=rb(1);
+      const btype=rb(2);
+      if(btype===0){
+        align();
+        const len=rb(16);rb(16);// nlen ignored
+        for(let i=0;i<len;i++)out.push(rb(8));
+      } else {
+        let litTree,distTree;
+        if(btype===1){litTree=fixedLit;distTree=fixedDist;}
+        else{
+          const hlit=rb(5)+257,hdist=rb(5)+1,hclen=rb(4)+4;
+          const clOrder=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+          const clLens=new Array(19).fill(0);
+          for(let i=0;i<hclen;i++)clLens[clOrder[i]]=rb(3);
+          const clTree=buildTree(clLens);
+          const allLens=[];
+          while(allLens.length<hlit+hdist){
+            const s=readSym(clTree);
+            if(s<16){allLens.push(s);}
+            else if(s===16){const rep=allLens[allLens.length-1];for(let i=rb(2)+3;i--;)allLens.push(rep);}
+            else if(s===17){for(let i=rb(3)+3;i--;)allLens.push(0);}
+            else{for(let i=rb(7)+11;i--;)allLens.push(0);}
+          }
+          litTree=buildTree(allLens.slice(0,hlit));
+          distTree=buildTree(allLens.slice(hlit));
+        }
+        while(true){
+          const sym=readSym(litTree);
+          if(sym===256)break;
+          if(sym<256){out.push(sym);}
+          else{
+            const li=sym-257;
+            const length=LENGTH_BASE[li]+rb(LENGTH_EXTRA[li]);
+            const di=readSym(distTree);
+            const dist=DIST_BASE[di]+rb(DIST_EXTRA[di]);
+            const start=out.length-dist;
+            for(let i=0;i<length;i++)out.push(out[start+i]);
+          }
+        }
+      }
+    }while(!bfinal);
+    return new Uint8Array(out);
+  }
+
+  /* --- Ler ZIP (suporta stored E deflate — compatível com Excel) --- */
+  async function zipRead(buf){
     const b=buf instanceof Uint8Array?buf:new Uint8Array(buf);
     const v=new DataView(b.buffer,b.byteOffset,b.byteLength);
     let epos=-1;
@@ -60,11 +175,25 @@ const XLSXio = (() => {
     for(let i=0;i<cnt;i++){
       if(b[p]!==0x50||b[p+1]!==0x4B||b[p+2]!==0x01||b[p+3]!==0x02)break;
       const nl=v.getUint16(p+28,true), el=v.getUint16(p+30,true), cl2=v.getUint16(p+32,true);
+      const method=v.getUint16(p+10,true); // compression method from central directory
       const lo=v.getUint32(p+42,true);
       const name=dec.decode(b.slice(p+46,p+46+nl));
       const lnl=v.getUint16(lo+26,true), lel=v.getUint16(lo+28,true);
-      const sz=v.getUint32(lo+18,true), ds=lo+30+lnl+lel;
-      files.set(name,b.slice(ds,ds+sz));
+      const csz=v.getUint32(lo+20,true); // compressed size
+      const usz=v.getUint32(lo+22,true); // uncompressed size (unused but kept for reference)
+      const ds=lo+30+lnl+lel;
+      const compressed=b.slice(ds,ds+csz);
+      if(method===0){
+        files.set(name,compressed);
+      } else if(method===8){
+        // DEFLATE — used by Excel when saving
+        const decompressed=await inflateRaw(compressed);
+        files.set(name,decompressed);
+      } else {
+        // Unknown compression — skip but log
+        console.warn(`ZIP: entrada '${name}' usa método de compressão ${method} não suportado`);
+        files.set(name, new Uint8Array(0));
+      }
       p+=46+nl+el+cl2;
     }
     return files;
@@ -136,64 +265,145 @@ const XLSXio = (() => {
     return zipWrite(files);
   }
 
-  /* --- Ler XLSX --- */
-  function read(arrayBuffer){
-    const files=zipRead(new Uint8Array(arrayBuffer));
+  /* --- Ler XLSX (async, compatível com ficheiros guardados pelo Excel) --- */
+  async function read(arrayBuffer){
+    const files=await zipRead(new Uint8Array(arrayBuffer));
     const parser=new DOMParser();
-    function parseXML(bytes){ return parser.parseFromString(dec.decode(bytes||new Uint8Array()),'application/xml'); }
 
-    // Shared strings
-    const ssDoc=parseXML(files.get('xl/sharedStrings.xml'));
-    const ssList=[...ssDoc.querySelectorAll('si')].map(el=>{
-      // concat all <t> inside <si>, handling <r><t> rich-text
-      return [...el.querySelectorAll('t')].map(t=>t.textContent).join('');
-    });
+    // Helper: parse XML tolerando namespaces do Excel
+    function parseXML(bytes){
+      if(!bytes||!bytes.length) return parser.parseFromString('<root/>','application/xml');
+      let xml=dec.decode(bytes);
+      // Remove namespace prefixes do Excel para simplificar querySelectorAll
+      xml=xml.replace(/<(\/?)(mc:|x14ac:|xr[\d]*:|r:|x:)/g,'<$1');
+      return parser.parseFromString(xml,'application/xml');
+    }
 
-    // Workbook — sheet names
-    const wbDoc=parseXML(files.get('xl/workbook.xml'));
+    // Helper: encontrar ficheiro no ZIP ignorando maiúsculas/minúsculas
+    function getFile(path){
+      if(files.has(path)) return files.get(path);
+      const lc=path.toLowerCase();
+      for(const [k,v] of files.entries()) if(k.toLowerCase()===lc) return v;
+      return null;
+    }
+
+    // Shared strings (podem não existir se o Excel usou inlineStr apenas)
+    const ssList=[];
+    const ssBytes=getFile('xl/sharedStrings.xml');
+    if(ssBytes && ssBytes.length){
+      const ssDoc=parseXML(ssBytes);
+      ssDoc.querySelectorAll('si').forEach(el=>{
+        // Juntar todos os <t> dentro de <si> (texto simples e rich-text)
+        const texts=[...el.querySelectorAll('t')].map(t=>t.textContent);
+        ssList.push(texts.join(''));
+      });
+    }
+
+    // Ler relações do workbook para mapear rId → ficheiro real da folha
+    const wbRelBytes=getFile('xl/_rels/workbook.xml.rels');
+    const sheetFiles=new Map(); // rId → path dentro de xl/
+    if(wbRelBytes && wbRelBytes.length){
+      const relDoc=parseXML(wbRelBytes);
+      relDoc.querySelectorAll('Relationship').forEach(rel=>{
+        const id=rel.getAttribute('Id')||'';
+        const target=rel.getAttribute('Target')||'';
+        const type=rel.getAttribute('Type')||'';
+        if(type.includes('worksheet')||target.includes('sheet')){
+          // target pode ser relativo (worksheets/sheet1.xml) ou absoluto (/xl/worksheets/sheet1.xml)
+          const fullPath=target.startsWith('/')?target.slice(1):`xl/${target}`;
+          sheetFiles.set(id,fullPath);
+        }
+      });
+    }
+
+    // Workbook — obter nomes e ids das folhas
+    const wbBytes=getFile('xl/workbook.xml');
+    const result={};
+    if(!wbBytes||!wbBytes.length) return result;
+    const wbDoc=parseXML(wbBytes);
     const sheetEls=[...wbDoc.querySelectorAll('sheet')];
 
-    const result={};
-    sheetEls.forEach((shEl,i)=>{
+    for(let i=0;i<sheetEls.length;i++){
+      const shEl=sheetEls[i];
       const shName=shEl.getAttribute('name')||`Sheet${i+1}`;
-      const wsBytes=files.get(`xl/worksheets/sheet${i+1}.xml`);
-      if(!wsBytes){result[shName]=[];return;}
+      // Tentar obter o path real via relações, senão usar convenção
+      const rId=shEl.getAttribute('r:id')||shEl.getAttribute('id')||`rId${i+1}`;
+      const wsPath=sheetFiles.get(rId)||`xl/worksheets/sheet${i+1}.xml`;
+      const wsBytes=getFile(wsPath)||getFile(`xl/worksheets/sheet${i+1}.xml`);
+      if(!wsBytes||!wsBytes.length){result[shName]=[];continue;}
       const wsDoc=parseXML(wsBytes);
 
       const grid={};
-      [...wsDoc.querySelectorAll('row')].forEach(rowEl=>{
+      wsDoc.querySelectorAll('row').forEach(rowEl=>{
         const ri=parseInt(rowEl.getAttribute('r'),10)-1;
+        if(isNaN(ri)||ri<0) return;
         if(!grid[ri])grid[ri]={};
-        [...rowEl.querySelectorAll('c')].forEach(cel=>{
+        rowEl.querySelectorAll('c').forEach(cel=>{
           const ref=cel.getAttribute('r')||'';
+          // Converter referência de célula (ex: "AB12") em índice de coluna
           const colStr=ref.replace(/[0-9]/g,'');
+          if(!colStr) return;
           let ci=0;
-          for(let k=0;k<colStr.length;k++)ci=ci*26+(colStr.charCodeAt(k)-64);
+          for(let k=0;k<colStr.length;k++) ci=ci*26+(colStr.charCodeAt(k)-64);
           ci--;
-          const t=cel.getAttribute('t');
+
+          const t=cel.getAttribute('t')||'';
+
+          // Tipo inlineStr: <c t="inlineStr"><is><t>texto</t></is></c>
+          if(t==='inlineStr'){
+            const isEl=cel.querySelector('is');
+            const texts=isEl?[...isEl.querySelectorAll('t')].map(x=>x.textContent):[];
+            grid[ri][ci]=texts.join('');
+            return;
+          }
+
+          // Tipo str: fórmula que resulta em string — valor está em <v>
+          if(t==='str'){
+            const vEl=cel.querySelector('v');
+            grid[ri][ci]=vEl?vEl.textContent:'';
+            return;
+          }
+
+          // Shared string: <c t="s"><v>índice</v></c>
+          if(t==='s'){
+            const vEl=cel.querySelector('v');
+            if(!vEl){grid[ri][ci]='';return;}
+            const idx=parseInt(vEl.textContent,10);
+            grid[ri][ci]=ssList[idx]??'';
+            return;
+          }
+
+          // Boolean
+          if(t==='b'){
+            const vEl=cel.querySelector('v');
+            grid[ri][ci]=vEl?(vEl.textContent==='1'?true:false):'';
+            return;
+          }
+
+          // Número / data / sem tipo (Excel usa sem tipo para números)
           const vEl=cel.querySelector('v');
           if(!vEl){grid[ri][ci]='';return;}
-          const raw=vEl.textContent;
-          if(t==='s'){grid[ri][ci]=ssList[parseInt(raw,10)]??'';}
-          else if(t==='b'){grid[ri][ci]=raw==='1'?true:false;}
-          else{const n=Number(raw);grid[ri][ci]=isNaN(n)?raw:n;}
+          const raw=vEl.textContent.trim();
+          if(raw===''){grid[ri][ci]='';return;}
+          const n=Number(raw);
+          grid[ri][ci]=isNaN(n)?raw:n;
         });
       });
 
       const rowIdxs=Object.keys(grid).map(Number).sort((a,b)=>a-b);
-      if(!rowIdxs.length){result[shName]=[];return;}
+      if(!rowIdxs.length){result[shName]=[];continue;}
       const maxCols=Math.max(...rowIdxs.map(r=>Math.max(-1,...Object.keys(grid[r]).map(Number))))+1;
       const toArr=ri=>{const a=[];for(let c=0;c<maxCols;c++)a.push(grid[ri]?.[c]??'');return a;};
 
-      const hdr=toArr(rowIdxs[0]);
+      const hdr=toArr(rowIdxs[0]).map(h=>String(h??'').trim());
       const rows=rowIdxs.slice(1).map(ri=>{
         const arr=toArr(ri);
         const obj={};
-        hdr.forEach((h,ci)=>{if(h!==''&&h!==undefined)obj[String(h)]=arr[ci]??'';});
+        hdr.forEach((h,ci)=>{if(h!=='')obj[h]=arr[ci]??'';});
         return obj;
-      }).filter(o=>Object.values(o).some(v=>v!==''&&v!==undefined));
+      }).filter(o=>Object.values(o).some(v=>v!==''&&v!==null&&v!==undefined));
       result[shName]=rows;
-    });
+    }
     return result;
   }
 
@@ -372,7 +582,7 @@ async function readXlsxDb() {
     const fh = await xlsxDirHandle.getFileHandle(XLSX_DB_FILENAME);
     const file = await fh.getFile();
     const buf = await file.arrayBuffer();
-    const sheets = XLSXio.read(buf);
+    const sheets = await XLSXio.read(buf);
     const tableMap = {
       'Produtos':'produtos','Fornecedores':'fornecedores','Prateleiras':'prateleiras',
       'Lotes':'lotes','Movimentacoes':'movimentacoes','Kits':'kits'
@@ -725,6 +935,7 @@ const PAGE_TITLES = {
   prateleiras:'Prateleiras', lotes:'Cadastro de Lotes', movimentacoes:'Entradas / Saídas',
   alertas:'Alertas', relatorios:'Relatórios', basedados:'Base de Dados',
   usuarios:'Utilizadores', sincronizacao:'Sincronização', kits:'Kits de Produtos',
+  fichastock:'Gerar Ficha de Stock',
 };
 
 function navigateTo(page) {
@@ -746,6 +957,7 @@ function renderPage(page) {
     prateleiras:renderPrateleiras, lotes:renderLotes, movimentacoes:renderMovimentacoes,
     alertas:renderAlertas, relatorios:renderRelatorios, basedados:renderBaseDados,
     usuarios:renderUsuarios, sincronizacao:renderSincronizacao, kits:renderKits,
+    fichastock:renderFichaStock,
   };
   if (renders[page]) renders[page]();
 }
@@ -2261,11 +2473,17 @@ function exportDBXLSX() {
 function importDBXLSX(event) {
   const file = event.target.files[0];
   if (!file) return;
+  toast('info','A ler ficheiro XLSX...','Por favor aguarde — a descompressão pode demorar alguns segundos');
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
-      const sheets = XLSXio.read(e.target.result);
-      const ok = await confirm('Importar Base de Dados','Importar irá substituir todos os dados actuais (exceto utilizadores). Continuar?');
+      const sheets = await XLSXio.read(e.target.result);
+      const sheetNames = Object.keys(sheets);
+      if (!sheetNames.length) {
+        toast('error','Ficheiro vazio','Não foram encontradas folhas no XLSX. Verifique se o ficheiro está correcto.');
+        return;
+      }
+      const ok = await confirm('Importar Base de Dados',`Foram encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}. Importar irá substituir todos os dados actuais (exceto utilizadores). Continuar?`);
       if (!ok) return;
       const tableMap = {
         'Produtos':'produtos','Fornecedores':'fornecedores',
@@ -2275,26 +2493,33 @@ function importDBXLSX(event) {
       let imported = 0;
       for (const [sheetName, data] of Object.entries(sheets)) {
         const key = tableMap[sheetName];
-        if (key && data.length && !data[0].info) {
+        if (key && Array.isArray(data) && data.length && !data[0].info) {
           db.data[key] = data.map(r => {
             const obj = {...r};
             if (obj.id) obj.id = Number(obj.id);
             if (key === 'kits' && typeof obj.componentes === 'string') {
               try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
             }
+            // Normalize boolean 'ativo' field
+            if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
+            if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1) obj.ativo = true;
+            if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0) obj.ativo = false;
+            if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
             return obj;
           });
           imported++;
         }
       }
       db.save();
-      toast('success','Base de dados importada',`${imported} tabelas importadas com sucesso`);
+      toast('success','Base de dados importada',`${imported} tabela(s) importada(s) com sucesso. Total: ${sheetNames.join(', ')}`);
       renderBaseDados();
       updateAlertBadge();
     } catch(err) {
-      toast('error','Erro ao importar','Ficheiro XLSX invalido: '+err.message);
+      console.error('importDBXLSX error:', err);
+      toast('error','Erro ao importar', err.message || 'Ficheiro XLSX inválido ou corrompido.');
     }
   };
+  reader.onerror = () => toast('error','Erro ao ler ficheiro','Não foi possível ler o ficheiro seleccionado.');
   reader.readAsArrayBuffer(file);
   event.target.value = '';
 }
@@ -2827,6 +3052,381 @@ function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 }`;
   navigator.clipboard.writeText(script).then(()=>toast('success','Código copiado!','Cole no editor do Apps Script')).catch(()=>toast('error','Erro ao copiar'));
+}
+
+// ===================== FICHA DE STOCK PAGE =====================
+function renderFichaStock() {
+  const produtos = db.getAll('produtos');
+  document.getElementById('page-fichastock').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">${ICONS.report} Gerar Ficha de Stock</div>
+        <div class="page-title-sub">Ficha oficial DNME/PNME — República de Angola, Ministério da Saúde</div>
+      </div>
+    </div>
+
+    <div style="background:rgba(0,184,148,0.07);border:1px solid rgba(0,184,148,0.2);border-radius:var(--radius-sm);padding:12px 16px;font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+      ${ICONS.info}
+      <span>A ficha será gerada em formato imprimível, conforme o modelo oficial da <strong>Direcção Nacional de Medicamentos e Equipamentos</strong> do Ministério da Saúde de Angola. Funciona completamente <strong>offline</strong>.</span>
+    </div>
+
+    <div class="grid-2" style="gap:20px;">
+      <div class="card">
+        <div class="card-header"><div class="card-title">${ICONS.settings} Parâmetros da Ficha</div></div>
+
+        <div class="form-grid form-grid-2" style="padding:4px 0 16px;">
+          <div class="field-wrap form-grid-full">
+            <label class="field-label">${ICONS.map_pin} Unidade de Saúde <span class="field-req">*</span></label>
+            <input class="field-input" id="ficha-unidade" placeholder="Ex: Hospital Municipal de Malanje — Depósito" value="Hospital Municipal de Malanje — Depósito">
+          </div>
+          <div class="field-wrap">
+            <label class="field-label">Município <span class="field-req">*</span></label>
+            <input class="field-input" id="ficha-municipio" placeholder="Ex: Malanje" value="Malanje">
+          </div>
+          <div class="field-wrap">
+            <label class="field-label">Província <span class="field-req">*</span></label>
+            <input class="field-input" id="ficha-provincia" placeholder="Ex: Malanje" value="Malanje">
+          </div>
+          <div class="field-wrap form-grid-full">
+            <label class="field-label">${ICONS.pill} Produto / Medicamento <span class="field-req">*</span></label>
+            <select class="field-select" id="ficha-produto" onchange="updateFichaPreview()">
+              <option value="">Seleccionar produto...</option>
+              ${produtos.map(p=>`<option value="${p.id}">${p.nome}${p.forma?' — '+p.forma:''}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-primary" style="flex:1;" onclick="gerarFichaStock()">
+            ${ICONS.report} <span class="btn-text-content">Gerar e Imprimir Ficha</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><div class="card-title">${ICONS.info} Pré-visualização do Produto</div></div>
+        <div id="ficha-preview">
+          <div class="table-empty" style="padding:32px;">
+            ${ICONS.pill}
+            <p style="font-size:13px;">Seleccione um produto para ver o resumo</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function updateFichaPreview() {
+  const prodId = parseInt(document.getElementById('ficha-produto').value);
+  const el = document.getElementById('ficha-preview');
+  if (!prodId || !el) return;
+  const prod = db.getById('produtos', prodId);
+  if (!prod) return;
+  const lotes = db.getAll('lotes').filter(l=>Number(l.produto_id)===prodId);
+  const movs = db.getAll('movimentacoes').filter(m=>Number(m.produto_id)===prodId);
+  const {entradas, saidas, stock} = db.getStock(prodId);
+  const prat = prod.prateleira_id ? db.getById('prateleiras', prod.prateleira_id) : null;
+
+  el.innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:10px;padding:4px 0;">
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="color:var(--text-muted)">Produto</span>
+        <span style="font-weight:600;color:var(--text-primary)">${prod.nome}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="color:var(--text-muted)">Dosagem/Forma</span>
+        <span style="color:var(--text-secondary)">${prod.forma||'—'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="color:var(--text-muted)">Grupo Farmacológico</span>
+        <span style="color:var(--text-secondary)">${prod.grupo_farmacologico||'—'}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+        <span style="color:var(--text-muted)">Prateleira</span>
+        <span style="color:var(--text-secondary)">${prat?prat.nome:'—'}</span>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:4px;">
+        <div style="flex:1;background:rgba(39,174,96,0.1);border-radius:8px;padding:10px;text-align:center;">
+          <div style="font-size:20px;font-weight:700;color:var(--success)">${entradas}</div>
+          <div style="font-size:11px;color:var(--text-muted)">Entradas</div>
+        </div>
+        <div style="flex:1;background:rgba(231,76,60,0.1);border-radius:8px;padding:10px;text-align:center;">
+          <div style="font-size:20px;font-weight:700;color:var(--danger)">${saidas}</div>
+          <div style="font-size:11px;color:var(--text-muted)">Saídas</div>
+        </div>
+        <div style="flex:1;background:rgba(0,184,148,0.1);border-radius:8px;padding:10px;text-align:center;">
+          <div style="font-size:20px;font-weight:700;color:var(--accent)">${stock}</div>
+          <div style="font-size:11px;color:var(--text-muted)">Stock Actual</div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-muted);margin-top:4px;">
+        ${lotes.length} lote(s) • ${movs.length} movimentação(ões)
+      </div>
+    </div>
+  `;
+}
+
+function gerarFichaStock() {
+  const prodId = parseInt(document.getElementById('ficha-produto').value);
+  const unidade = document.getElementById('ficha-unidade').value.trim();
+  const municipio = document.getElementById('ficha-municipio').value.trim();
+  const provincia = document.getElementById('ficha-provincia').value.trim();
+
+  if (!prodId) { toast('error', 'Seleccione um produto'); return; }
+  if (!unidade) { toast('error', 'Indique a Unidade de Saúde'); return; }
+
+  const prod = db.getById('produtos', prodId);
+  if (!prod) { toast('error', 'Produto não encontrado'); return; }
+
+  // Collect all lots for this product (sorted by expiry date)
+  const lotes = db.getAll('lotes')
+    .filter(l => Number(l.produto_id) === prodId)
+    .sort((a,b) => (a.validade||'').localeCompare(b.validade||''));
+
+  // Collect all movements sorted by date ascending
+  const movs = db.getAll('movimentacoes')
+    .filter(m => Number(m.produto_id) === prodId)
+    .sort((a,b) => {
+      const da = a.data||'', db2 = b.data||'';
+      return da.localeCompare(db2) || Number(a.id) - Number(b.id);
+    });
+
+  // Calculate running stock for each movement
+  let runningStock = 0;
+  const movsWithStock = movs.map(m => {
+    const q = Number(m.quantidade) || 0;
+    if (m.tipo === 'Entrada') runningStock += q;
+    else runningStock -= q;
+    return { ...m, stockApos: runningStock };
+  });
+
+  // Build rows HTML
+  const fmtDate = d => {
+    if (!d) return '';
+    try { return new Date(d).toLocaleDateString('pt-AO', {day:'2-digit',month:'2-digit',year:'numeric'}); }
+    catch { return d; }
+  };
+
+  // Up to 8 lots shown in header
+  const loteCols = lotes.slice(0, 8);
+  const numCols = Math.max(loteCols.length, 3);
+
+  const lotNumRow = Array.from({length: numCols}, (_,i) => {
+    const l = loteCols[i];
+    return `<td style="text-align:center;font-size:9px;">${l ? l.numero_lote : ''}</td>`;
+  }).join('');
+
+  const lotValRow = Array.from({length: numCols}, (_,i) => {
+    const l = loteCols[i];
+    return `<td style="text-align:center;font-size:9px;">${l ? fmtDate(l.validade) : ''}</td>`;
+  }).join('');
+
+  const lotValUnitRow = Array.from({length: numCols}, (_,i) => {
+    const l = loteCols[i];
+    const forn = l?.fornecedor_id ? db.getById('fornecedores', l.fornecedor_id) : null;
+    return `<td style="text-align:center;font-size:9px;">${l?.preco || (forn ? '' : '') || ''}</td>`;
+  }).join('');
+
+  const lotHeader = Array.from({length: numCols}, (_,i) => {
+    return `<th style="text-align:center;font-size:9px;font-weight:600;">${i+1}°</th>`;
+  }).join('');
+
+  // Movement rows
+  const movRows = movsWithStock.map((m, idx) => {
+    const isEntrada = m.tipo === 'Entrada';
+    const lot = m.lote_id ? db.getById('lotes', m.lote_id) : null;
+    const valor = m.preco ? (Number(m.quantidade) * Number(m.preco)).toFixed(2) : '';
+    const stockValor = m.preco ? (m.stockApos * Number(m.preco)).toFixed(2) : '';
+    return `<tr style="height:24px;">
+      <td style="text-align:center;font-size:9px;">${fmtDate(m.data)}</td>
+      <td style="font-size:9px;padding-left:3px;">${m.destino||'—'}</td>
+      <td style="text-align:center;font-size:9px;">${m.id}</td>
+      <td style="text-align:center;font-size:9px;color:${isEntrada?'#155724':''};">${isEntrada ? (m.quantidade||'') : ''}</td>
+      <td style="text-align:center;font-size:9px;">${isEntrada && m.preco ? valor : ''}</td>
+      <td style="text-align:center;font-size:9px;color:${!isEntrada?'#721c24':''};">${!isEntrada ? (m.quantidade||'') : ''}</td>
+      <td style="text-align:center;font-size:9px;">${!isEntrada && m.preco ? valor : ''}</td>
+      <td style="text-align:center;font-size:9px;font-weight:600;">${m.stockApos >= 0 ? m.stockApos : 0}</td>
+      <td style="text-align:center;font-size:9px;">${m.preco ? stockValor : ''}</td>
+      <td style="font-size:9px;"></td>
+    </tr>`;
+  }).join('');
+
+  // Empty rows to fill the page
+  const emptyRowCount = Math.max(0, 20 - movsWithStock.length);
+  const emptyRows = Array.from({length: emptyRowCount}, () =>
+    `<tr style="height:24px;"><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>`
+  ).join('');
+
+  // Transporte row every 5 rows (after 5, 10, 15, 20)
+  const transporteRow = `<tr style="height:20px;background:#f8f8f8;">
+    <td colspan="3" style="font-size:8px;padding-left:3px;font-style:italic;">Transporte...</td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;font-weight:600;"></td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;"></td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;font-weight:600;"></td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;"></td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;font-weight:700;"></td>
+    <td style="text-align:center;font-size:8px;border-top:2px solid #333;"></td>
+    <td></td>
+  </tr>`;
+
+  // Angola coat of arms SVG (simplified, works offline)
+  const angolaEmblema = `<svg viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg" width="60" height="60">
+    <circle cx="40" cy="40" r="38" fill="#CC0000" stroke="#000" stroke-width="1.5"/>
+    <circle cx="40" cy="40" r="32" fill="#CC0000"/>
+    <!-- Gear ring -->
+    <circle cx="40" cy="40" r="26" fill="none" stroke="#FFCC00" stroke-width="4" stroke-dasharray="8 4"/>
+    <!-- Star -->
+    <polygon points="40,18 43,30 55,30 45.5,37 49,49 40,42 31,49 34.5,37 25,30 37,30" fill="#FFCC00" stroke="#000" stroke-width="0.5"/>
+    <!-- Machete -->
+    <path d="M20,55 Q30,40 50,38" stroke="#FFCC00" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <path d="M20,55 L22,58 L50,40 L48,37 Z" fill="#FFCC00"/>
+    <!-- Book -->
+    <rect x="30" y="54" width="20" height="12" rx="1" fill="#FFCC00" stroke="#000" stroke-width="0.5"/>
+    <line x1="40" y1="54" x2="40" y2="66" stroke="#000" stroke-width="0.5"/>
+  </svg>`;
+
+  // MINSA logo (text-based, works offline)
+  const minsaLogo = `<div style="width:55px;height:55px;border:2px solid #333;border-radius:4px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:7px;font-weight:700;color:#333;line-height:1.2;padding:3px;">MINSA<br/>Angola</div>`;
+
+  const htmlContent = `<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<title>Ficha de Stock — ${prod.nome}</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Times New Roman',Times,serif; font-size:10px; color:#000; background:#fff; }
+  .page { width:210mm; min-height:297mm; padding:8mm 10mm; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; }
+  td, th { border:1px solid #000; padding:2px 3px; vertical-align:middle; }
+  .header-table td, .header-table th { border:none; }
+  .no-border td, .no-border th { border:none; }
+  h2 { font-size:16px; font-weight:bold; letter-spacing:1px; }
+  .section-label { font-weight:bold; font-size:10px; }
+  @media print {
+    body { margin:0; }
+    .page { padding:6mm 8mm; margin:0; width:100%; min-height:auto; }
+    @page { size:A4 portrait; margin:0; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- CABEÇALHO PRINCIPAL -->
+  <table style="border:1px solid #000;margin-bottom:0;">
+    <tr>
+      <td style="width:65px;border:none;text-align:center;vertical-align:middle;padding:4px;">
+        ${angolaEmblema}
+      </td>
+      <td style="border:none;vertical-align:top;padding:4px 6px;">
+        <div style="font-size:9px;font-weight:bold;line-height:1.6;">REPÚBLICA DE ANGOLA</div>
+        <div style="font-size:9px;font-weight:bold;line-height:1.6;">MINISTÉRIO DA SAÚDE</div>
+        <div style="font-size:8px;line-height:1.5;">DIRECÇÃO NACIONAL DE MEDICAMENTOS E EQUIPAMENTOS</div>
+        <div style="font-size:8px;line-height:1.5;">PROGRAMA NACIONAL DE MEDICAMENTOS ESSENCIAIS</div>
+      </td>
+      <td style="border-left:1px solid #000;border-top:none;border-right:none;border-bottom:none;text-align:center;vertical-align:middle;padding:6px;width:140px;">
+        <h2>FICHA DE STOCK</h2>
+      </td>
+      <td style="width:65px;border:none;text-align:center;vertical-align:middle;padding:4px;">
+        ${minsaLogo}
+      </td>
+    </tr>
+  </table>
+
+  <!-- UNIDADE / MUNICÍPIO / PROVÍNCIA -->
+  <table style="border:1px solid #000;border-top:none;">
+    <tr>
+      <td style="width:45%;font-size:9px;"><span style="font-weight:bold;">Unidade de Saúde:</span> ${unidade}</td>
+      <td style="width:28%;font-size:9px;"><span style="font-weight:bold;">Município:</span> ${municipio}</td>
+      <td style="font-size:9px;"><span style="font-weight:bold;">Província:</span> ${provincia}</td>
+    </tr>
+  </table>
+
+  <!-- DESIGNAÇÃO E QUANTIDADE -->
+  <table style="border:1px solid #000;border-top:none;">
+    <tr>
+      <td style="width:50%;text-align:center;font-weight:bold;font-size:10px;border-right:1px solid #000;">DESIGNAÇÃO — DOSAGEM — FORMA</td>
+      <td style="text-align:center;font-weight:bold;font-size:10px;">QUANTIDADE POR EMBALAGEM</td>
+    </tr>
+    <tr>
+      <td style="font-size:10px;padding:4px 6px;border-right:1px solid #000;font-weight:600;">
+        ${prod.nome}${prod.forma ? ' — ' + prod.forma : ''}${prod.grupo_farmacologico ? ' (' + prod.grupo_farmacologico + ')' : ''}
+      </td>
+      <td style="font-size:10px;padding:4px 6px;text-align:center;"></td>
+    </tr>
+  </table>
+
+  <!-- LOTES: DATAS EXPIRAÇÃO / Nº LOTE / VALOR UNIT -->
+  <table style="border:1px solid #000;border-top:none;">
+    <thead>
+      <tr>
+        <th style="width:90px;font-size:9px;font-weight:bold;border-right:1px solid #000;">Datas de Expiração:</th>
+        ${lotHeader}
+      </tr>
+      <tr>
+        <td style="font-size:9px;font-weight:bold;border-right:1px solid #000;">Nº de Lote:</td>
+        ${lotNumRow}
+      </tr>
+      <tr>
+        <td style="font-size:9px;font-weight:bold;border-right:1px solid #000;">Valor Unit.:</td>
+        ${lotValUnitRow}
+      </tr>
+    </thead>
+  </table>
+
+  <!-- TABELA DE MOVIMENTAÇÕES -->
+  <table style="border:1px solid #000;border-top:none;margin-top:0;">
+    <thead>
+      <tr style="background:#f0f0f0;">
+        <th rowspan="2" style="width:60px;font-size:8px;text-align:center;vertical-align:middle;">Data do<br/>Movimento</th>
+        <th rowspan="2" style="font-size:8px;text-align:center;vertical-align:middle;">Origem/Destino do Produto</th>
+        <th rowspan="2" style="width:45px;font-size:8px;text-align:center;vertical-align:middle;">Nº do<br/>Documento</th>
+        <th colspan="2" style="font-size:8px;text-align:center;">Entrada</th>
+        <th colspan="2" style="font-size:8px;text-align:center;">Saída</th>
+        <th colspan="2" style="font-size:8px;text-align:center;">Stock Existente</th>
+        <th rowspan="2" style="width:55px;font-size:8px;text-align:center;vertical-align:middle;">Assinatura</th>
+      </tr>
+      <tr style="background:#f0f0f0;">
+        <th style="width:40px;font-size:8px;text-align:center;">Quant.</th>
+        <th style="width:45px;font-size:8px;text-align:center;">Valor</th>
+        <th style="width:40px;font-size:8px;text-align:center;">Quant.</th>
+        <th style="width:45px;font-size:8px;text-align:center;">Valor</th>
+        <th style="width:40px;font-size:8px;text-align:center;">Quant.</th>
+        <th style="width:45px;font-size:8px;text-align:center;">Valor</th>
+      </tr>
+      ${transporteRow}
+    </thead>
+    <tbody>
+      ${movRows}
+      ${emptyRows}
+    </tbody>
+  </table>
+
+  <!-- RODAPÉ -->
+  <div style="margin-top:8px;font-size:8px;color:#555;text-align:right;">
+    Ficha gerada em ${new Date().toLocaleString('pt-AO')} &nbsp;|&nbsp; BANDMED v3 — Hospital Municipal de Malanje
+  </div>
+
+</div>
+<script>
+  window.onload = function() {
+    setTimeout(function() { window.print(); }, 400);
+  };
+<\/script>
+</body>
+</html>`;
+
+  // Open in new window (works offline)
+  const win = window.open('', '_blank', 'width=900,height=700,scrollbars=yes');
+  if (!win) {
+    toast('error', 'Janela bloqueada', 'Permita pop-ups para este site para gerar a ficha.');
+    return;
+  }
+  win.document.open();
+  win.document.write(htmlContent);
+  win.document.close();
+  toast('success', 'Ficha gerada!', 'A ficha de stock foi aberta numa nova janela para impressão.');
 }
 
 // ===================== MODAL HELPERS =====================
