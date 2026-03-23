@@ -51,46 +51,54 @@ const XLSXio = (() => {
   /* --- Descompressão DEFLATE (para ficheiros Excel) --- */
   /* --- DEFLATE via DecompressionStream (nativo, rápido) --- */
   async function inflateRaw(data){
+    const src = data instanceof Uint8Array ? data : new Uint8Array(data);
+
     if(typeof DecompressionStream !== 'undefined'){
-      try{
-        const ds = new DecompressionStream('deflate-raw');
-        const writer = ds.writable.getWriter();
-        const reader = ds.readable.getReader();
+      // Excel pode usar raw deflate OU deflate com cabeçalho zlib — tentar ambos
+      for(const fmt of ['deflate-raw','deflate']){
+        try{
+          const ds = new DecompressionStream(fmt);
+          const writer = ds.writable.getWriter();
+          const reader = ds.readable.getReader();
+          let streamDone = false;
 
-        // CRÍTICO: escrever e ler em paralelo para evitar deadlock em ficheiros grandes.
-        // Se escrevermos tudo antes de ler, o buffer interno bloqueia e o sistema trava.
-        const writePromise = (async () => {
-          try {
-            await writer.write(data instanceof Uint8Array ? data : new Uint8Array(data));
-            await writer.close();
-          } catch(e) { /* ignorar erros de escrita — o leitor vai terminar */ }
-        })();
+          const writeP = (async()=>{
+            try{ await writer.write(src); await writer.close(); }
+            catch(e){ try{ await writer.abort(); }catch(_){} }
+          })();
 
-        const readPromise = (async () => {
-          const chunks = [];
-          try {
-            while(true){
-              const {done, value} = await reader.read();
-              if(done) break;
-              if(value) chunks.push(value);
+          const readP = (async()=>{
+            const chunks=[];
+            try{
+              while(true){
+                const {done,value} = await reader.read();
+                if(done){ streamDone=true; break; }
+                if(value && value.length) chunks.push(value);
+              }
+            }catch(e){ try{ await reader.cancel(); }catch(_){} }
+            return chunks;
+          })();
+
+          const [,chunks] = await Promise.all([writeP, readP]);
+
+          // Só usar se o stream terminou normalmente E produziu dados
+          if(streamDone && chunks.length){
+            const total = chunks.reduce((s,c)=>s+c.length,0);
+            if(total > 0){
+              const out = new Uint8Array(total);
+              let off=0; for(const c of chunks){out.set(c,off);off+=c.length;}
+              return out;
             }
-          } catch(e) { /* fim de stream */ }
-          return chunks;
-        })();
-
-        const [, chunks] = await Promise.all([writePromise, readPromise]);
-
-        const total = chunks.reduce((s,c) => s + c.length, 0);
-        const out = new Uint8Array(total);
-        let off = 0;
-        for(const c of chunks){ out.set(c, off); off += c.length; }
-        return out;
-      } catch(e) {
-        console.warn('DecompressionStream falhou, usando fallback puro:', e.message);
+          }
+          // Decompressão falhou silenciosamente — tentar próximo formato
+        }catch(e){
+          // Tentar próximo formato
+        }
       }
     }
-    // Fallback puro — mais lento mas funcional
-    return inflatePure(data);
+
+    // Fallback puro em JavaScript — funciona sempre, independente do browser
+    return inflatePure(src);
   }
 
   /* --- Pure-JS DEFLATE (fallback para browsers sem DecompressionStream) ---
@@ -319,51 +327,27 @@ const XLSXio = (() => {
     return zipWrite(files);
   }
 
-  /* --- Ler XLSX (async, compatível com ficheiros guardados pelo Excel) --- */
+  /* ================================================================
+     LEITOR XLSX VIA REGEX — sem DOMParser, sem namespaces, sem erros.
+     Funciona com qualquer ficheiro gerado pelo Microsoft Excel.
+     ================================================================ */
   async function read(arrayBuffer){
-    const files=await zipRead(new Uint8Array(arrayBuffer));
+    const files = await zipRead(new Uint8Array(arrayBuffer));
 
-    // Limpar XML do Excel completamente — remove todos os namespaces
-    // para que querySelectorAll funcione em qualquer browser
-    function cleanXML(bytes){
-      if(!bytes||!bytes.length) return '';
-      let xml = dec.decode(bytes);
-      // 1. Remover declarações de namespace (xmlns:xxx="..." e xmlns="...")
-      xml = xml.replace(/\s+xmlns(?::\w+)?="[^"]*"/g, '');
-      // 2. Remover prefixos de namespace em TAGS de abertura e fecho
-      xml = xml.replace(/<(\/?)\s*[\w]+:([\w\-]+)/g, '<$1$2');
-      // 3. Remover prefixos de namespace em ATRIBUTOS (ex: r:id → id, mc:Ignorable → ignorado)
-      xml = xml.replace(/\s[\w]+:[\w\-]+=(?:"[^"]*"|'[^']*')/g, (match) => {
-        // Manter apenas atributos sem prefixo — extrair nome e valor
-        const m = match.match(/\s([\w]+):([\w\-]+)=("([^"]*)")/);
-        if(!m) return '';
-        // Atributos de namespace raiz como r:id, cp:xxx, etc: preservar valor com novo nome
-        return ` ${m[2]}="${m[4]}"`;
-      });
-      // 4. Remover instruções de processamento problemáticas
-      xml = xml.replace(/<\?[^>]+\?>/g, '');
-      return xml;
+    /* Converter bytes para texto */
+    function getText(bytes){
+      if(!bytes || !bytes.length) return '';
+      try { return dec.decode(bytes); } catch(e){ return ''; }
     }
 
-    // Parsear como HTML — muito mais tolerante que XML e não precisa de namespaces
-    function parseXML(bytes){
-      const xml = cleanXML(bytes);
-      if(!xml) return document.createElement('root');
-      const doc = new DOMParser().parseFromString(
-        `<bandmedroot>${xml}</bandmedroot>`, 'text/html'
-      );
-      // Retornar o elemento raiz que contém tudo
-      return doc.querySelector('bandmedroot') || doc.body || doc;
-    }
-
-    // Helper: encontrar ficheiro no ZIP ignorando maiúsculas/minúsculas e separadores
+    /* Procurar ficheiro no ZIP sem diferenciar maiúsculas/minúsculas */
     function getFile(path){
       if(files.has(path)) return files.get(path);
-      const lc = path.toLowerCase().replace(/\\/g, '/');
+      const lc = path.toLowerCase().replace(/\\/g,'/');
       for(const [k,v] of files.entries()){
         if(k.toLowerCase().replace(/\\/g,'/')===lc) return v;
       }
-      // Tentar só o nome do ficheiro (sem path)
+      // só o nome do ficheiro
       const fname = path.split('/').pop().toLowerCase();
       for(const [k,v] of files.entries()){
         if(k.split('/').pop().toLowerCase()===fname) return v;
@@ -371,139 +355,160 @@ const XLSXio = (() => {
       return null;
     }
 
-    // DEBUG: listar todos os ficheiros no ZIP
-    const allFiles = [...files.keys()];
-
-    // Shared strings
-    const ssList = [];
-    const ssBytes = getFile('xl/sharedStrings.xml');
-    if(ssBytes && ssBytes.length){
-      const ssRoot = parseXML(ssBytes);
-      ssRoot.querySelectorAll('si').forEach(el => {
-        const texts = [...el.querySelectorAll('t')].map(t => t.textContent);
-        ssList.push(texts.join(''));
-      });
+    /* Descodificar entidades XML */
+    function unesc(s){
+      return String(s||'')
+        .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+        .replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&#(\d+);/g,(_,n)=>String.fromCharCode(+n));
     }
 
-    // Relações do workbook → rId para path de cada folha
-    const sheetFiles = new Map();
-    const wbRelBytes = getFile('xl/_rels/workbook.xml.rels');
-    if(wbRelBytes && wbRelBytes.length){
-      const relRoot = parseXML(wbRelBytes);
-      relRoot.querySelectorAll('Relationship, relationship').forEach(rel => {
-        const id = rel.getAttribute('Id') || rel.getAttribute('id') || '';
-        const target = rel.getAttribute('Target') || rel.getAttribute('target') || '';
-        const type = rel.getAttribute('Type') || rel.getAttribute('type') || '';
-        if(type.includes('worksheet') || target.toLowerCase().includes('sheet')){
-          let fullPath = target;
-          if(target.startsWith('/')) fullPath = target.slice(1);
-          else if(!target.startsWith('xl/')) fullPath = `xl/${target}`;
-          sheetFiles.set(id, fullPath);
-        }
-      });
+    /* Obter valor de um atributo de uma tag (tolera namespaces) */
+    function attr(tag, name){
+      // casa: name="val" ou ns:name="val"
+      const re = new RegExp(`(?:^|\\s)(?:[\\w]+:)?${name}\\s*=\\s*"([^"]*)"`, 'i');
+      const m  = tag.match(re);
+      return m ? unesc(m[1]) : '';
     }
 
-    // Workbook — nomes das folhas
-    const wbBytes = getFile('xl/workbook.xml');
-    const result = {};
-    if(!wbBytes || !wbBytes.length) return result;
-
-    const wbRoot = parseXML(wbBytes);
-    // Tentar vários selectores porque o HTML parser pode mudar capitalização
-    const sheetEls = [
-      ...wbRoot.querySelectorAll('sheet'),
-      ...wbRoot.querySelectorAll('sheets > *'),
-    ].filter((el, i, arr) => arr.indexOf(el) === i); // dedup
-
-    if(!sheetEls.length){
-      // Último recurso: extrair nomes diretamente do XML via regex
-      const wbXml = cleanXML(wbBytes);
-      const sheetMatches = [...wbXml.matchAll(/<sheet\s([^/?>]+)/gi)];
-      sheetMatches.forEach((m, i) => {
-        const attrs = m[1];
-        const nameM = attrs.match(/name="([^"]*)"/i);
-        const ridM  = attrs.match(/\bid="([^"]*)"/i);
-        const shName = nameM ? nameM[1] : `Sheet${i+1}`;
-        const rId    = ridM  ? ridM[1]  : `rId${i+1}`;
-        const wsPath = sheetFiles.get(rId) || `xl/worksheets/sheet${i+1}.xml`;
-        result[shName] = readSheet(wsPath, i);
-      });
+    /* Extrair blocos entre tags (ex: <si>...</si>) */
+    function blocks(xml, tag){
+      const re = new RegExp(`<${tag}(?:\\s[^>]*)?(?:/>|>([\\s\\S]*?)</${tag}>)`,'gi');
+      const result = [];
+      let m;
+      while((m=re.exec(xml))!==null) result.push(m[1]||'');
       return result;
     }
 
-    function readSheet(wsPath, fallbackIdx){
-      const wsBytes = getFile(wsPath) || getFile(`xl/worksheets/sheet${fallbackIdx+1}.xml`);
-      if(!wsBytes || !wsBytes.length) return [];
-      const wsRoot = parseXML(wsBytes);
-      const grid = {};
+    /* ── 1. Shared Strings ── */
+    const ssList = [];
+    const ssXml = getText(getFile('xl/sharedStrings.xml'));
+    if(ssXml){
+      for(const siInner of blocks(ssXml,'si')){
+        // Rich-text: concatenar todos os <t>
+        const tMatches = [...siInner.matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/gi)];
+        ssList.push(unesc(tMatches.map(m=>m[1]).join('')));
+      }
+    }
 
-      wsRoot.querySelectorAll('row').forEach(rowEl => {
-        const ri = parseInt(rowEl.getAttribute('r'), 10) - 1;
-        if(isNaN(ri) || ri < 0) return;
-        if(!grid[ri]) grid[ri] = {};
-        rowEl.querySelectorAll('c').forEach(cel => {
-          const ref = cel.getAttribute('r') || '';
-          const colStr = ref.replace(/[0-9]/g, '');
-          if(!colStr) return;
-          let ci = 0;
-          for(let k=0; k<colStr.length; k++) ci = ci*26 + (colStr.toUpperCase().charCodeAt(k) - 64);
+    /* ── 2. Relações workbook → ficheiros de folha ── */
+    const sheetFiles = new Map(); // rId → fullPath
+    const relXml = getText(getFile('xl/_rels/workbook.xml.rels'));
+    if(relXml){
+      const relRe = /<[Rr]elationship\s([^/?>]+)/gi;
+      let rm;
+      while((rm=relRe.exec(relXml))!==null){
+        const tag = rm[1];
+        const id     = attr(tag,'Id');
+        const target = attr(tag,'Target');
+        const type   = attr(tag,'Type');
+        if(!id || !target) continue;
+        if(type.includes('worksheet')||target.toLowerCase().includes('sheet')){
+          let path = target;
+          if(path.startsWith('/'))      path = path.slice(1);
+          else if(!path.startsWith('xl/')) path = 'xl/'+path;
+          sheetFiles.set(id, path);
+        }
+      }
+    }
+
+    /* ── 3. Nomes das folhas no workbook.xml ── */
+    const wbXml = getText(getFile('xl/workbook.xml'));
+    if(!wbXml) return {};
+
+    const sheetDefs = []; // [{name, rId}]
+    const sheetTagRe = /<[Ss]heet\s([^/?>]+)/gi;
+    let sm;
+    while((sm=sheetTagRe.exec(wbXml))!==null){
+      const tag = sm[1];
+      const name = attr(tag,'name') || `Sheet${sheetDefs.length+1}`;
+      // rId pode ser r:id="rId1" ou id="rId1"
+      const rId  = attr(tag,'r:id') || attr(tag,'id') || `rId${sheetDefs.length+1}`;
+      sheetDefs.push({name, rId});
+    }
+
+    /* ── 4. Ler cada folha ── */
+    function readSheet(wsPath, idx){
+      const wsXml = getText(getFile(wsPath) || getFile(`xl/worksheets/sheet${idx+1}.xml`));
+      if(!wsXml) return [];
+
+      /* Extrair apenas o bloco <sheetData>…</sheetData> para eficiência */
+      const sdM = wsXml.match(/<sheetData[^>]*>([\s\S]*?)<\/sheetData>/i);
+      const sheetData = sdM ? sdM[1] : wsXml;
+
+      const grid = {};   // {rowIdx: {colIdx: value}}
+
+      /* Iterar sobre linhas */
+      const rowRe = /<row\s([^>]*)>([\s\S]*?)<\/row>/gi;
+      let rowM;
+      while((rowM=rowRe.exec(sheetData))!==null){
+        const rAttr = attr(rowM[1],'r');
+        const ri    = rAttr ? parseInt(rAttr,10)-1 : -1;
+        if(ri<0) continue;
+        if(!grid[ri]) grid[ri]={};
+
+        /* Iterar sobre células dentro da linha */
+        const cellRe = /<c\s([^>]*)(?:\/?>|>([\s\S]*?)<\/c>)/gi;
+        let cM;
+        while((cM=cellRe.exec(rowM[2]))!==null){
+          const cTag   = cM[1];
+          const cInner = cM[2]||'';
+          const ref    = attr(cTag,'r');
+          const t      = attr(cTag,'t');
+
+          /* Converter referência (ex: "AB12") em índice de coluna */
+          const colStr = ref.replace(/[0-9]/g,'').toUpperCase();
+          if(!colStr) continue;
+          let ci=0;
+          for(let k=0;k<colStr.length;k++) ci=ci*26+(colStr.charCodeAt(k)-64);
           ci--;
-          const t = cel.getAttribute('t') || '';
-          if(t === 'inlineStr'){
-            const isEl = cel.querySelector('is');
-            grid[ri][ci] = isEl ? [...isEl.querySelectorAll('t')].map(x=>x.textContent).join('') : '';
-            return;
+
+          /* Valor da célula */
+          let val = '';
+
+          if(t==='inlineStr'){
+            const tM = cInner.match(/<is[^>]*>[\s\S]*?<t[^>]*>([^<]*)<\/t>/i);
+            val = tM ? unesc(tM[1]) : '';
+          } else if(t==='s'){
+            /* Shared string */
+            const vM = cInner.match(/<v[^>]*>(\d+)<\/v>/i);
+            if(vM) val = ssList[parseInt(vM[1],10)] ?? '';
+          } else if(t==='b'){
+            const vM = cInner.match(/<v[^>]*>([^<]+)<\/v>/i);
+            val = vM ? vM[1].trim()==='1' : false;
+          } else {
+            /* Número, data, string de fórmula (t='str') ou sem tipo */
+            const vM = cInner.match(/<v[^>]*>([^<]*)<\/v>/i);
+            if(vM){
+              const raw = vM[1].trim();
+              if(raw!==''){
+                const n = Number(raw);
+                val = isNaN(n) ? unesc(raw) : n;
+              }
+            }
           }
-          if(t === 'str'){
-            const vEl = cel.querySelector('v');
-            grid[ri][ci] = vEl ? vEl.textContent : '';
-            return;
-          }
-          if(t === 's'){
-            const vEl = cel.querySelector('v');
-            if(!vEl){ grid[ri][ci]=''; return; }
-            const idx = parseInt(vEl.textContent, 10);
-            grid[ri][ci] = ssList[idx] ?? '';
-            return;
-          }
-          if(t === 'b'){
-            const vEl = cel.querySelector('v');
-            grid[ri][ci] = vEl ? (vEl.textContent==='1') : false;
-            return;
-          }
-          const vEl = cel.querySelector('v');
-          if(!vEl){ grid[ri][ci]=''; return; }
-          const raw = vEl.textContent.trim();
-          if(raw===''){ grid[ri][ci]=''; return; }
-          const n = Number(raw);
-          grid[ri][ci] = isNaN(n) ? raw : n;
-        });
-      });
+          grid[ri][ci] = val;
+        }
+      }
 
       const rowIdxs = Object.keys(grid).map(Number).sort((a,b)=>a-b);
       if(!rowIdxs.length) return [];
       const maxCols = Math.max(...rowIdxs.map(r=>Math.max(-1,...Object.keys(grid[r]).map(Number))))+1;
       const toArr = ri => { const a=[]; for(let c=0;c<maxCols;c++) a.push(grid[ri]?.[c]??''); return a; };
       const hdr = toArr(rowIdxs[0]).map(h=>String(h??'').trim());
-      return rowIdxs.slice(1).map(ri => {
-        const arr = toArr(ri);
-        const obj = {};
-        hdr.forEach((h,ci) => { if(h!=='') obj[h] = arr[ci]??''; });
+      if(!hdr.some(h=>h!=='')) return []; // sem cabeçalho válido
+      return rowIdxs.slice(1).map(ri=>{
+        const arr=toArr(ri); const obj={};
+        hdr.forEach((h,ci)=>{ if(h!=='') obj[h]=arr[ci]??''; });
         return obj;
-      }).filter(o => Object.values(o).some(v => v!==''&&v!==null&&v!==undefined));
+      }).filter(o=>Object.values(o).some(v=>v!==''&&v!==null&&v!==undefined));
     }
 
-    for(let i=0; i<sheetEls.length; i++){
-      const shEl = sheetEls[i];
-      // Tentar vários nomes de atributos porque HTML parser converte para minúsculas
-      const shName = shEl.getAttribute('name') || shEl.getAttribute('Name') || `Sheet${i+1}`;
-      const rId = shEl.getAttribute('id') || shEl.getAttribute('Id') ||
-                  shEl.getAttribute('r:id') || `rId${i+1}`;
-      const wsPath = sheetFiles.get(rId) || sheetFiles.get(`rId${i+1}`) ||
-                     `xl/worksheets/sheet${i+1}.xml`;
-      result[shName] = readSheet(wsPath, i);
-    }
-
+    /* ── 5. Montar resultado ── */
+    const result={};
+    sheetDefs.forEach(({name,rId},i)=>{
+      const wsPath = sheetFiles.get(rId) || `xl/worksheets/sheet${i+1}.xml`;
+      result[name] = readSheet(wsPath, i);
+    });
     return result;
   }
 
@@ -2579,26 +2584,54 @@ function exportDBXLSX() {
 function importDBXLSX(event) {
   const file = event.target.files[0];
   if (!file) return;
-  toast('info','A ler ficheiro XLSX...','Por favor aguarde — a descompressão pode demorar alguns segundos');
+  toast('info','A importar base de dados...','A descompressão e leitura do Excel pode demorar alguns segundos');
   const reader = new FileReader();
   reader.onload = async (e) => {
     try {
       const sheets = await XLSXio.read(e.target.result);
       const sheetNames = Object.keys(sheets);
+
+      // Se não encontrou folhas, tentar forçar fallback puro (ignora DecompressionStream)
       if (!sheetNames.length) {
-        toast('error','Ficheiro vazio','Não foram encontradas folhas no XLSX. Verifique se o ficheiro está correcto.');
-        return;
+        toast('warning','A tentar método alternativo...','O primeiro método falhou, a tentar leitura alternativa');
+        await new Promise(r=>setTimeout(r,300));
+        // Forçar uso do inflatePure desactivando DecompressionStream temporariamente
+        const origDS = window.DecompressionStream;
+        try { window.DecompressionStream = undefined; } catch(_) {}
+        let sheets2 = {};
+        try {
+          sheets2 = await XLSXio.read(e.target.result);
+        } finally {
+          try { window.DecompressionStream = origDS; } catch(_) {}
+        }
+        const names2 = Object.keys(sheets2);
+        if(!names2.length){
+          toast('error','Ficheiro não reconhecido',
+            'Não foi possível ler o ficheiro. Certifique-se que guarda o ficheiro no formato .xlsx (Excel 2007+) e não .xls (Excel 97-2003).');
+          return;
+        }
+        // Usar resultado do fallback
+        Object.assign(sheets, sheets2);
+        sheetNames.push(...names2);
       }
-      const ok = await confirm('Importar Base de Dados',`Foram encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}. Importar irá substituir todos os dados actuais (exceto utilizadores). Continuar?`);
+
+      const ok = await confirm('Importar Base de Dados',
+        `Foram encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}.
+Importar irá substituir todos os dados actuais (exceto utilizadores). Continuar?`);
       if (!ok) return;
+
       const tableMap = {
         'Produtos':'produtos','Fornecedores':'fornecedores',
         'Prateleiras':'prateleiras','Lotes':'lotes',
-        'Movimentacoes':'movimentacoes','Movimentações':'movimentacoes','Kits':'kits'
+        'Movimentacoes':'movimentacoes','Movimentações':'movimentacoes','Kits':'kits',
+        // Aceitar também nomes em minúsculas ou com variações
+        'produtos':'produtos','fornecedores':'fornecedores','prateleiras':'prateleiras',
+        'lotes':'lotes','movimentacoes':'movimentacoes','kits':'kits',
       };
+
       let imported = 0;
       for (const [sheetName, data] of Object.entries(sheets)) {
-        const key = tableMap[sheetName];
+        const key = tableMap[sheetName] || tableMap[sheetName.toLowerCase()];
         if (key && Array.isArray(data) && data.length && !data[0].info) {
           db.data[key] = data.map(r => {
             const obj = {...r};
@@ -2606,18 +2639,18 @@ function importDBXLSX(event) {
             if (key === 'kits' && typeof obj.componentes === 'string') {
               try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
             }
-            // Normalize boolean 'ativo' field
-            if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
-            if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1) obj.ativo = true;
-            if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0) obj.ativo = false;
+            // Normalizar campo 'ativo' (booleano)
             if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
+            else if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
+            else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
+            else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
             return obj;
           });
           imported++;
         }
       }
       db.save();
-      toast('success','Base de dados importada',`${imported} tabela(s) importada(s) com sucesso. Total: ${sheetNames.join(', ')}`);
+      toast('success','Base de dados importada',`${imported} tabela(s) importada(s) com sucesso.`);
       renderBaseDados();
       updateAlertBadge();
     } catch(err) {
