@@ -49,40 +49,34 @@ const XLSXio = (() => {
   }
 
   /* --- Descompressão DEFLATE (para ficheiros Excel) --- */
-  /* --- DEFLATE via DecompressionStream (nativo, rápido) --- */
+  /* --- DEFLATE via pipeThrough — método correcto, sem deadlock, funciona no Chrome mobile --- */
   async function inflateRaw(data){
     const src = data instanceof Uint8Array ? data : new Uint8Array(data);
 
     if(typeof DecompressionStream !== 'undefined'){
-      // Excel pode usar raw deflate OU deflate com cabeçalho zlib — tentar ambos
+      // Método principal: pipeThrough com Blob.stream() — sem deadlock
+      if(typeof Response !== 'undefined'){
+        for(const fmt of ['deflate-raw','deflate']){
+          try{
+            const blob = new Blob([src]);
+            const stream = blob.stream().pipeThrough(new DecompressionStream(fmt));
+            const buf = await new Response(stream).arrayBuffer();
+            const out = new Uint8Array(buf);
+            if(out.length > 0) return out;
+          }catch(e){}
+        }
+      }
+
+      // Fallback: write/read manual com Promise.all
       for(const fmt of ['deflate-raw','deflate']){
         try{
           const ds = new DecompressionStream(fmt);
           const writer = ds.writable.getWriter();
           const reader = ds.readable.getReader();
-          let streamDone = false;
-
-          const writeP = (async()=>{
-            try{ await writer.write(src); await writer.close(); }
-            catch(e){ try{ await writer.abort(); }catch(_){} }
-          })();
-
-          const readP = (async()=>{
-            const chunks=[];
-            try{
-              while(true){
-                const {done,value} = await reader.read();
-                if(done){ streamDone=true; break; }
-                if(value && value.length) chunks.push(value);
-              }
-            }catch(e){ try{ await reader.cancel(); }catch(_){} }
-            return chunks;
-          })();
-
+          const writeP = (async()=>{ try{ await writer.write(src); await writer.close(); }catch(e){} })();
+          const readP  = (async()=>{ const c=[]; try{ while(true){ const{done,value}=await reader.read(); if(done)break; if(value&&value.length)c.push(value); } }catch(e){} return c; })();
           const [,chunks] = await Promise.all([writeP, readP]);
-
-          // Só usar se o stream terminou normalmente E produziu dados
-          if(streamDone && chunks.length){
+          if(chunks.length){
             const total = chunks.reduce((s,c)=>s+c.length,0);
             if(total > 0){
               const out = new Uint8Array(total);
@@ -90,14 +84,11 @@ const XLSXio = (() => {
               return out;
             }
           }
-          // Decompressão falhou silenciosamente — tentar próximo formato
-        }catch(e){
-          // Tentar próximo formato
-        }
+        }catch(e){}
       }
     }
 
-    // Fallback puro em JavaScript — funciona sempre, independente do browser
+    // Último recurso: DEFLATE puro JS
     return inflatePure(src);
   }
 
@@ -540,29 +531,46 @@ const XLSX_WORKER_CODE = `
 'use strict';
 const dec = new TextDecoder();
 
-// ── DEFLATE nativo via DecompressionStream ──
+// ── DEFLATE via pipeThrough (método correcto, sem deadlock, funciona no Chrome mobile) ──
 async function inflateRaw(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+
+  // Método 1: pipeThrough com Blob.stream() — sem deadlock, suportado no Chrome 103+ mobile
+  if (typeof DecompressionStream !== 'undefined' && typeof Response !== 'undefined') {
+    try {
+      const blob = new Blob([bytes]);
+      const stream = blob.stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      const buf = await new Response(stream).arrayBuffer();
+      return new Uint8Array(buf);
+    } catch(e1) {
+      // Tentar com cabeçalho zlib (alguns ficheiros usam deflate em vez de deflate-raw)
+      try {
+        const blob = new Blob([bytes]);
+        const stream = blob.stream().pipeThrough(new DecompressionStream('deflate'));
+        const buf = await new Response(stream).arrayBuffer();
+        return new Uint8Array(buf);
+      } catch(e2) {}
+    }
+  }
+
+  // Método 2: write/read manual com Promise.all (fallback)
   if (typeof DecompressionStream !== 'undefined') {
     try {
       const ds = new DecompressionStream('deflate-raw');
       const writer = ds.writable.getWriter();
       const reader = ds.readable.getReader();
-      const writeP = (async () => {
-        try { await writer.write(data); await writer.close(); } catch(e){}
-      })();
-      const readP = (async () => {
-        const chunks = [];
-        try { while(true){ const{done,value}=await reader.read(); if(done)break; if(value)chunks.push(value); } } catch(e){}
-        return chunks;
-      })();
+      const writeP = (async()=>{ try{ await writer.write(bytes); await writer.close(); }catch(e){} })();
+      const readP  = (async()=>{ const c=[]; try{ while(true){ const{done,value}=await reader.read(); if(done)break; if(value)c.push(value); } }catch(e){} return c; })();
       const [,chunks] = await Promise.all([writeP, readP]);
       const total = chunks.reduce((s,c)=>s+c.length,0);
       const out = new Uint8Array(total); let off=0;
       for(const c of chunks){ out.set(c,off); off+=c.length; }
-      return out;
-    } catch(e) {}
+      if(out.length > 0) return out;
+    } catch(e3) {}
   }
-  return inflatePure(data);
+
+  // Método 3: DEFLATE puro JS (último recurso — lento mas funcional)
+  return inflatePure(bytes);
 }
 
 // ── DEFLATE puro (fallback) ──
