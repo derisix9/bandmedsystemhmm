@@ -322,142 +322,188 @@ const XLSXio = (() => {
   /* --- Ler XLSX (async, compatível com ficheiros guardados pelo Excel) --- */
   async function read(arrayBuffer){
     const files=await zipRead(new Uint8Array(arrayBuffer));
-    const parser=new DOMParser();
 
-    // Helper: parse XML tolerando namespaces do Excel
-    function parseXML(bytes){
-      if(!bytes||!bytes.length) return parser.parseFromString('<root/>','application/xml');
-      let xml=dec.decode(bytes);
-      // Remove namespace prefixes do Excel para simplificar querySelectorAll
-      xml=xml.replace(/<(\/?)(mc:|x14ac:|xr[\d]*:|r:|x:)/g,'<$1');
-      return parser.parseFromString(xml,'application/xml');
+    // Limpar XML do Excel completamente — remove todos os namespaces
+    // para que querySelectorAll funcione em qualquer browser
+    function cleanXML(bytes){
+      if(!bytes||!bytes.length) return '';
+      let xml = dec.decode(bytes);
+      // 1. Remover declarações de namespace (xmlns:xxx="..." e xmlns="...")
+      xml = xml.replace(/\s+xmlns(?::\w+)?="[^"]*"/g, '');
+      // 2. Remover prefixos de namespace em TAGS de abertura e fecho
+      xml = xml.replace(/<(\/?)\s*[\w]+:([\w\-]+)/g, '<$1$2');
+      // 3. Remover prefixos de namespace em ATRIBUTOS (ex: r:id → id, mc:Ignorable → ignorado)
+      xml = xml.replace(/\s[\w]+:[\w\-]+=(?:"[^"]*"|'[^']*')/g, (match) => {
+        // Manter apenas atributos sem prefixo — extrair nome e valor
+        const m = match.match(/\s([\w]+):([\w\-]+)=("([^"]*)")/);
+        if(!m) return '';
+        // Atributos de namespace raiz como r:id, cp:xxx, etc: preservar valor com novo nome
+        return ` ${m[2]}="${m[4]}"`;
+      });
+      // 4. Remover instruções de processamento problemáticas
+      xml = xml.replace(/<\?[^>]+\?>/g, '');
+      return xml;
     }
 
-    // Helper: encontrar ficheiro no ZIP ignorando maiúsculas/minúsculas
+    // Parsear como HTML — muito mais tolerante que XML e não precisa de namespaces
+    function parseXML(bytes){
+      const xml = cleanXML(bytes);
+      if(!xml) return document.createElement('root');
+      const doc = new DOMParser().parseFromString(
+        `<bandmedroot>${xml}</bandmedroot>`, 'text/html'
+      );
+      // Retornar o elemento raiz que contém tudo
+      return doc.querySelector('bandmedroot') || doc.body || doc;
+    }
+
+    // Helper: encontrar ficheiro no ZIP ignorando maiúsculas/minúsculas e separadores
     function getFile(path){
       if(files.has(path)) return files.get(path);
-      const lc=path.toLowerCase();
-      for(const [k,v] of files.entries()) if(k.toLowerCase()===lc) return v;
+      const lc = path.toLowerCase().replace(/\\/g, '/');
+      for(const [k,v] of files.entries()){
+        if(k.toLowerCase().replace(/\\/g,'/')===lc) return v;
+      }
+      // Tentar só o nome do ficheiro (sem path)
+      const fname = path.split('/').pop().toLowerCase();
+      for(const [k,v] of files.entries()){
+        if(k.split('/').pop().toLowerCase()===fname) return v;
+      }
       return null;
     }
 
-    // Shared strings (podem não existir se o Excel usou inlineStr apenas)
-    const ssList=[];
-    const ssBytes=getFile('xl/sharedStrings.xml');
+    // DEBUG: listar todos os ficheiros no ZIP
+    const allFiles = [...files.keys()];
+
+    // Shared strings
+    const ssList = [];
+    const ssBytes = getFile('xl/sharedStrings.xml');
     if(ssBytes && ssBytes.length){
-      const ssDoc=parseXML(ssBytes);
-      ssDoc.querySelectorAll('si').forEach(el=>{
-        // Juntar todos os <t> dentro de <si> (texto simples e rich-text)
-        const texts=[...el.querySelectorAll('t')].map(t=>t.textContent);
+      const ssRoot = parseXML(ssBytes);
+      ssRoot.querySelectorAll('si').forEach(el => {
+        const texts = [...el.querySelectorAll('t')].map(t => t.textContent);
         ssList.push(texts.join(''));
       });
     }
 
-    // Ler relações do workbook para mapear rId → ficheiro real da folha
-    const wbRelBytes=getFile('xl/_rels/workbook.xml.rels');
-    const sheetFiles=new Map(); // rId → path dentro de xl/
+    // Relações do workbook → rId para path de cada folha
+    const sheetFiles = new Map();
+    const wbRelBytes = getFile('xl/_rels/workbook.xml.rels');
     if(wbRelBytes && wbRelBytes.length){
-      const relDoc=parseXML(wbRelBytes);
-      relDoc.querySelectorAll('Relationship').forEach(rel=>{
-        const id=rel.getAttribute('Id')||'';
-        const target=rel.getAttribute('Target')||'';
-        const type=rel.getAttribute('Type')||'';
-        if(type.includes('worksheet')||target.includes('sheet')){
-          // target pode ser relativo (worksheets/sheet1.xml) ou absoluto (/xl/worksheets/sheet1.xml)
-          const fullPath=target.startsWith('/')?target.slice(1):`xl/${target}`;
-          sheetFiles.set(id,fullPath);
+      const relRoot = parseXML(wbRelBytes);
+      relRoot.querySelectorAll('Relationship, relationship').forEach(rel => {
+        const id = rel.getAttribute('Id') || rel.getAttribute('id') || '';
+        const target = rel.getAttribute('Target') || rel.getAttribute('target') || '';
+        const type = rel.getAttribute('Type') || rel.getAttribute('type') || '';
+        if(type.includes('worksheet') || target.toLowerCase().includes('sheet')){
+          let fullPath = target;
+          if(target.startsWith('/')) fullPath = target.slice(1);
+          else if(!target.startsWith('xl/')) fullPath = `xl/${target}`;
+          sheetFiles.set(id, fullPath);
         }
       });
     }
 
-    // Workbook — obter nomes e ids das folhas
-    const wbBytes=getFile('xl/workbook.xml');
-    const result={};
-    if(!wbBytes||!wbBytes.length) return result;
-    const wbDoc=parseXML(wbBytes);
-    const sheetEls=[...wbDoc.querySelectorAll('sheet')];
+    // Workbook — nomes das folhas
+    const wbBytes = getFile('xl/workbook.xml');
+    const result = {};
+    if(!wbBytes || !wbBytes.length) return result;
 
-    for(let i=0;i<sheetEls.length;i++){
-      const shEl=sheetEls[i];
-      const shName=shEl.getAttribute('name')||`Sheet${i+1}`;
-      // Tentar obter o path real via relações, senão usar convenção
-      const rId=shEl.getAttribute('r:id')||shEl.getAttribute('id')||`rId${i+1}`;
-      const wsPath=sheetFiles.get(rId)||`xl/worksheets/sheet${i+1}.xml`;
-      const wsBytes=getFile(wsPath)||getFile(`xl/worksheets/sheet${i+1}.xml`);
-      if(!wsBytes||!wsBytes.length){result[shName]=[];continue;}
-      const wsDoc=parseXML(wsBytes);
+    const wbRoot = parseXML(wbBytes);
+    // Tentar vários selectores porque o HTML parser pode mudar capitalização
+    const sheetEls = [
+      ...wbRoot.querySelectorAll('sheet'),
+      ...wbRoot.querySelectorAll('sheets > *'),
+    ].filter((el, i, arr) => arr.indexOf(el) === i); // dedup
 
-      const grid={};
-      wsDoc.querySelectorAll('row').forEach(rowEl=>{
-        const ri=parseInt(rowEl.getAttribute('r'),10)-1;
-        if(isNaN(ri)||ri<0) return;
-        if(!grid[ri])grid[ri]={};
-        rowEl.querySelectorAll('c').forEach(cel=>{
-          const ref=cel.getAttribute('r')||'';
-          // Converter referência de célula (ex: "AB12") em índice de coluna
-          const colStr=ref.replace(/[0-9]/g,'');
+    if(!sheetEls.length){
+      // Último recurso: extrair nomes diretamente do XML via regex
+      const wbXml = cleanXML(wbBytes);
+      const sheetMatches = [...wbXml.matchAll(/<sheet\s([^/?>]+)/gi)];
+      sheetMatches.forEach((m, i) => {
+        const attrs = m[1];
+        const nameM = attrs.match(/name="([^"]*)"/i);
+        const ridM  = attrs.match(/\bid="([^"]*)"/i);
+        const shName = nameM ? nameM[1] : `Sheet${i+1}`;
+        const rId    = ridM  ? ridM[1]  : `rId${i+1}`;
+        const wsPath = sheetFiles.get(rId) || `xl/worksheets/sheet${i+1}.xml`;
+        result[shName] = readSheet(wsPath, i);
+      });
+      return result;
+    }
+
+    function readSheet(wsPath, fallbackIdx){
+      const wsBytes = getFile(wsPath) || getFile(`xl/worksheets/sheet${fallbackIdx+1}.xml`);
+      if(!wsBytes || !wsBytes.length) return [];
+      const wsRoot = parseXML(wsBytes);
+      const grid = {};
+
+      wsRoot.querySelectorAll('row').forEach(rowEl => {
+        const ri = parseInt(rowEl.getAttribute('r'), 10) - 1;
+        if(isNaN(ri) || ri < 0) return;
+        if(!grid[ri]) grid[ri] = {};
+        rowEl.querySelectorAll('c').forEach(cel => {
+          const ref = cel.getAttribute('r') || '';
+          const colStr = ref.replace(/[0-9]/g, '');
           if(!colStr) return;
-          let ci=0;
-          for(let k=0;k<colStr.length;k++) ci=ci*26+(colStr.charCodeAt(k)-64);
+          let ci = 0;
+          for(let k=0; k<colStr.length; k++) ci = ci*26 + (colStr.toUpperCase().charCodeAt(k) - 64);
           ci--;
-
-          const t=cel.getAttribute('t')||'';
-
-          // Tipo inlineStr: <c t="inlineStr"><is><t>texto</t></is></c>
-          if(t==='inlineStr'){
-            const isEl=cel.querySelector('is');
-            const texts=isEl?[...isEl.querySelectorAll('t')].map(x=>x.textContent):[];
-            grid[ri][ci]=texts.join('');
+          const t = cel.getAttribute('t') || '';
+          if(t === 'inlineStr'){
+            const isEl = cel.querySelector('is');
+            grid[ri][ci] = isEl ? [...isEl.querySelectorAll('t')].map(x=>x.textContent).join('') : '';
             return;
           }
-
-          // Tipo str: fórmula que resulta em string — valor está em <v>
-          if(t==='str'){
-            const vEl=cel.querySelector('v');
-            grid[ri][ci]=vEl?vEl.textContent:'';
+          if(t === 'str'){
+            const vEl = cel.querySelector('v');
+            grid[ri][ci] = vEl ? vEl.textContent : '';
             return;
           }
-
-          // Shared string: <c t="s"><v>índice</v></c>
-          if(t==='s'){
-            const vEl=cel.querySelector('v');
-            if(!vEl){grid[ri][ci]='';return;}
-            const idx=parseInt(vEl.textContent,10);
-            grid[ri][ci]=ssList[idx]??'';
+          if(t === 's'){
+            const vEl = cel.querySelector('v');
+            if(!vEl){ grid[ri][ci]=''; return; }
+            const idx = parseInt(vEl.textContent, 10);
+            grid[ri][ci] = ssList[idx] ?? '';
             return;
           }
-
-          // Boolean
-          if(t==='b'){
-            const vEl=cel.querySelector('v');
-            grid[ri][ci]=vEl?(vEl.textContent==='1'?true:false):'';
+          if(t === 'b'){
+            const vEl = cel.querySelector('v');
+            grid[ri][ci] = vEl ? (vEl.textContent==='1') : false;
             return;
           }
-
-          // Número / data / sem tipo (Excel usa sem tipo para números)
-          const vEl=cel.querySelector('v');
-          if(!vEl){grid[ri][ci]='';return;}
-          const raw=vEl.textContent.trim();
-          if(raw===''){grid[ri][ci]='';return;}
-          const n=Number(raw);
-          grid[ri][ci]=isNaN(n)?raw:n;
+          const vEl = cel.querySelector('v');
+          if(!vEl){ grid[ri][ci]=''; return; }
+          const raw = vEl.textContent.trim();
+          if(raw===''){ grid[ri][ci]=''; return; }
+          const n = Number(raw);
+          grid[ri][ci] = isNaN(n) ? raw : n;
         });
       });
 
-      const rowIdxs=Object.keys(grid).map(Number).sort((a,b)=>a-b);
-      if(!rowIdxs.length){result[shName]=[];continue;}
-      const maxCols=Math.max(...rowIdxs.map(r=>Math.max(-1,...Object.keys(grid[r]).map(Number))))+1;
-      const toArr=ri=>{const a=[];for(let c=0;c<maxCols;c++)a.push(grid[ri]?.[c]??'');return a;};
-
-      const hdr=toArr(rowIdxs[0]).map(h=>String(h??'').trim());
-      const rows=rowIdxs.slice(1).map(ri=>{
-        const arr=toArr(ri);
-        const obj={};
-        hdr.forEach((h,ci)=>{if(h!=='')obj[h]=arr[ci]??'';});
+      const rowIdxs = Object.keys(grid).map(Number).sort((a,b)=>a-b);
+      if(!rowIdxs.length) return [];
+      const maxCols = Math.max(...rowIdxs.map(r=>Math.max(-1,...Object.keys(grid[r]).map(Number))))+1;
+      const toArr = ri => { const a=[]; for(let c=0;c<maxCols;c++) a.push(grid[ri]?.[c]??''); return a; };
+      const hdr = toArr(rowIdxs[0]).map(h=>String(h??'').trim());
+      return rowIdxs.slice(1).map(ri => {
+        const arr = toArr(ri);
+        const obj = {};
+        hdr.forEach((h,ci) => { if(h!=='') obj[h] = arr[ci]??''; });
         return obj;
-      }).filter(o=>Object.values(o).some(v=>v!==''&&v!==null&&v!==undefined));
-      result[shName]=rows;
+      }).filter(o => Object.values(o).some(v => v!==''&&v!==null&&v!==undefined));
     }
+
+    for(let i=0; i<sheetEls.length; i++){
+      const shEl = sheetEls[i];
+      // Tentar vários nomes de atributos porque HTML parser converte para minúsculas
+      const shName = shEl.getAttribute('name') || shEl.getAttribute('Name') || `Sheet${i+1}`;
+      const rId = shEl.getAttribute('id') || shEl.getAttribute('Id') ||
+                  shEl.getAttribute('r:id') || `rId${i+1}`;
+      const wsPath = sheetFiles.get(rId) || sheetFiles.get(`rId${i+1}`) ||
+                     `xl/worksheets/sheet${i+1}.xml`;
+      result[shName] = readSheet(wsPath, i);
+    }
+
     return result;
   }
 
