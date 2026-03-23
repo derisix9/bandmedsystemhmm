@@ -531,6 +531,304 @@ const XLSXio = (() => {
 })();
 // ===================== FIM XLSX PURO =====================
 
+// ===================== XLSX WEB WORKER =====================
+// O Web Worker executa o parsing pesado numa thread separada,
+// evitando que o browser congele durante a importação.
+// O código do worker é embutido como Blob URL — sem ficheiros externos.
+
+const XLSX_WORKER_CODE = `
+'use strict';
+const dec = new TextDecoder();
+
+// ── DEFLATE nativo via DecompressionStream ──
+async function inflateRaw(data) {
+  if (typeof DecompressionStream !== 'undefined') {
+    try {
+      const ds = new DecompressionStream('deflate-raw');
+      const writer = ds.writable.getWriter();
+      const reader = ds.readable.getReader();
+      const writeP = (async () => {
+        try { await writer.write(data); await writer.close(); } catch(e){}
+      })();
+      const readP = (async () => {
+        const chunks = [];
+        try { while(true){ const{done,value}=await reader.read(); if(done)break; if(value)chunks.push(value); } } catch(e){}
+        return chunks;
+      })();
+      const [,chunks] = await Promise.all([writeP, readP]);
+      const total = chunks.reduce((s,c)=>s+c.length,0);
+      const out = new Uint8Array(total); let off=0;
+      for(const c of chunks){ out.set(c,off); off+=c.length; }
+      return out;
+    } catch(e) {}
+  }
+  return inflatePure(data);
+}
+
+// ── DEFLATE puro (fallback) ──
+function inflatePure(data) {
+  const src = data instanceof Uint8Array ? data : new Uint8Array(data);
+  let pos=0,bits=0,buf=0;
+  function rb(n){ while(bits<n){buf|=src[pos++]<<bits;bits+=8;} const v=buf&((1<<n)-1);buf>>>=n;bits-=n;return v; }
+  function align(){ bits=0;buf=0; }
+  function buildTree(lens){
+    const maxBits=Math.max(0,...lens);
+    if(!maxBits) return{lut:new Int32Array(0),maxBits:0};
+    const counts=new Int32Array(maxBits+1);
+    for(const l of lens) if(l) counts[l]++;
+    const nc=new Int32Array(maxBits+2);
+    for(let i=1;i<=maxBits;i++) nc[i+1]=(nc[i]+counts[i])<<1;
+    const lut=new Int32Array(1<<maxBits).fill(-1);
+    for(let sym=0;sym<lens.length;sym++){
+      const l=lens[sym]; if(!l) continue;
+      const code=nc[l]++;
+      let rc=0; for(let i=0;i<l;i++) rc=(rc<<1)|((code>>i)&1);
+      for(let k=rc;k<(1<<maxBits);k+=(1<<l)) lut[k]=(l<<16)|sym;
+    }
+    return{lut,maxBits};
+  }
+  function readSym(tree){
+    while(bits<tree.maxBits){buf|=src[pos++]<<bits;bits+=8;}
+    const e=tree.lut[buf&((1<<tree.maxBits)-1)];
+    if(e<0) throw new Error('bad sym');
+    buf>>>=(e>>>16); bits-=(e>>>16); return e&0xFFFF;
+  }
+  const FLL=new Uint8Array(288);
+  for(let i=0;i<144;i++)FLL[i]=8; for(let i=144;i<256;i++)FLL[i]=9;
+  for(let i=256;i<280;i++)FLL[i]=7; for(let i=280;i<288;i++)FLL[i]=8;
+  const fL=buildTree([...FLL]), fD=buildTree([...new Uint8Array(32).fill(5)]);
+  const LB=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LE=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DB=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DE=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  let ob=new Uint8Array(Math.max(src.length*6,65536)), op=0;
+  function grow(){ const b=new Uint8Array(ob.length*2); b.set(ob); ob=b; }
+  let bfinal=0;
+  do {
+    bfinal=rb(1); const bt=rb(2);
+    if(bt===0){ align(); const len=rb(16);rb(16); while(op+len>ob.length)grow(); for(let i=0;i<len;i++)ob[op++]=rb(8); }
+    else {
+      let lT,dT;
+      if(bt===1){lT=fL;dT=fD;}
+      else {
+        const hl=rb(5)+257,hd=rb(5)+1,hc=rb(4)+4;
+        const co=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+        const cl=new Array(19).fill(0); for(let i=0;i<hc;i++)cl[co[i]]=rb(3);
+        const ct=buildTree(cl); const al=[];
+        while(al.length<hl+hd){
+          const s=readSym(ct);
+          if(s<16)al.push(s);
+          else if(s===16){const r=al[al.length-1];for(let i=rb(2)+3;i--;)al.push(r);}
+          else if(s===17){for(let i=rb(3)+3;i--;)al.push(0);}
+          else{for(let i=rb(7)+11;i--;)al.push(0);}
+        }
+        lT=buildTree(al.slice(0,hl)); dT=buildTree(al.slice(hl));
+      }
+      while(true){
+        const sym=readSym(lT); if(sym===256)break;
+        if(sym<256){ if(op>=ob.length)grow(); ob[op++]=sym; }
+        else {
+          const li=sym-257, len=LB[li]+rb(LE[li]);
+          const di=readSym(dT), dist=DB[di]+rb(DE[di]);
+          const st=op-dist; while(op+len>ob.length)grow();
+          for(let i=0;i<len;i++)ob[op++]=ob[st+i];
+        }
+      }
+    }
+  } while(!bfinal);
+  return ob.subarray(0,op);
+}
+
+// ── Leitura do ZIP ──
+async function zipRead(buf){
+  const b=buf instanceof Uint8Array?buf:new Uint8Array(buf);
+  const v=new DataView(b.buffer,b.byteOffset,b.byteLength);
+  let ep=-1;
+  for(let i=b.length-22;i>=0;i--){if(b[i]===0x50&&b[i+1]===0x4B&&b[i+2]===0x05&&b[i+3]===0x06){ep=i;break;}}
+  if(ep<0) throw new Error('ZIP inválido');
+  const cnt=v.getUint16(ep+8,true), cdOff=v.getUint32(ep+16,true);
+  const files=new Map(); let p=cdOff;
+  for(let i=0;i<cnt;i++){
+    if(b[p]!==0x50||b[p+1]!==0x4B||b[p+2]!==0x01||b[p+3]!==0x02)break;
+    const nl=v.getUint16(p+28,true),el=v.getUint16(p+30,true),cl=v.getUint16(p+32,true);
+    const method=v.getUint16(p+10,true), lo=v.getUint32(p+42,true);
+    const name=dec.decode(b.slice(p+46,p+46+nl));
+    const lnl=v.getUint16(lo+26,true),lel=v.getUint16(lo+28,true);
+    const csz=v.getUint32(lo+20,true), ds=lo+30+lnl+lel;
+    const compressed=b.slice(ds,ds+csz);
+    files.set(name, method===8 ? await inflateRaw(compressed) : compressed);
+    p+=46+nl+el+cl;
+  }
+  return files;
+}
+
+// ── Leitor XLSX via Regex (sem DOMParser) ──
+async function readXLSX(arrayBuffer){
+  const files = await zipRead(new Uint8Array(arrayBuffer));
+
+  function getText(bytes){ try{ return bytes&&bytes.length?dec.decode(bytes):''; }catch(e){return '';} }
+
+  function getFile(path){
+    if(files.has(path)) return files.get(path);
+    const lc=path.toLowerCase().replace(/\\\\/g,'/');
+    for(const[k,v] of files.entries()) if(k.toLowerCase().replace(/\\\\/g,'/')===lc) return v;
+    const fn=path.split('/').pop().toLowerCase();
+    for(const[k,v] of files.entries()) if(k.split('/').pop().toLowerCase()===fn) return v;
+    return null;
+  }
+
+  function unesc(s){ return String(s||'').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&#(\\d+);/g,(_,n)=>String.fromCharCode(+n)); }
+
+  function attr(tag,name){
+    const re=new RegExp('(?:^|\\\\s)(?:[\\\\w]+:)?'+name+'\\\\s*=\\\\s*"([^"]*)"','i');
+    const m=tag.match(re); return m?unesc(m[1]):'';
+  }
+
+  // Shared strings
+  const ssList=[];
+  const ssXml=getText(getFile('xl/sharedStrings.xml'));
+  if(ssXml){
+    const siRe=/<si(?:\\s[^>]*)?>([\\s\\S]*?)<\\/si>/gi; let sm;
+    while((sm=siRe.exec(ssXml))!==null){
+      const tMs=[...sm[1].matchAll(/<t(?:\\s[^>]*)?>([^<]*)<\\/t>/gi)];
+      ssList.push(unesc(tMs.map(m=>m[1]).join('')));
+    }
+  }
+
+  // Relações
+  const sheetFiles=new Map();
+  const relXml=getText(getFile('xl/_rels/workbook.xml.rels'));
+  if(relXml){
+    const rRe=/<[Rr]elationship\\s([^/?>]+)/gi; let rm;
+    while((rm=rRe.exec(relXml))!==null){
+      const id=attr(rm[1],'Id'), target=attr(rm[1],'Target'), type=attr(rm[1],'Type');
+      if(!id||!target) continue;
+      if(type.includes('worksheet')||target.toLowerCase().includes('sheet')){
+        let path=target;
+        if(path.startsWith('/'))path=path.slice(1);
+        else if(!path.startsWith('xl/'))path='xl/'+path;
+        sheetFiles.set(id,path);
+      }
+    }
+  }
+
+  // Nomes das folhas
+  const wbXml=getText(getFile('xl/workbook.xml'));
+  if(!wbXml) return {};
+  const sheetDefs=[];
+  const stRe=/<[Ss]heet\\s([^/?>]+)/gi; let stm;
+  while((stm=stRe.exec(wbXml))!==null){
+    const tag=stm[1];
+    const name=attr(tag,'name')||('Sheet'+(sheetDefs.length+1));
+    const rId=attr(tag,'r:id')||attr(tag,'id')||('rId'+(sheetDefs.length+1));
+    sheetDefs.push({name,rId});
+  }
+
+  // Ler cada folha
+  function readSheet(wsPath,idx){
+    const wsXml=getText(getFile(wsPath)||getFile('xl/worksheets/sheet'+(idx+1)+'.xml'));
+    if(!wsXml) return [];
+    const sdM=wsXml.match(/<sheetData[^>]*>([\\s\\S]*?)<\\/sheetData>/i);
+    const sd=sdM?sdM[1]:wsXml;
+    const grid={};
+    const rowRe=/<row\\s([^>]*)>([\\s\\S]*?)<\\/row>/gi; let rowM;
+    while((rowM=rowRe.exec(sd))!==null){
+      const ri=parseInt(attr(rowM[1],'r'),10)-1; if(ri<0)continue;
+      if(!grid[ri])grid[ri]={};
+      const cellRe=/<c\\s([^>]*)(?:\\/>|>([\\s\\S]*?)<\\/c>)/gi; let cM;
+      while((cM=cellRe.exec(rowM[2]))!==null){
+        const cTag=cM[1], cInner=cM[2]||'', t=attr(cTag,'t');
+        const ref=attr(cTag,'r'); const colStr=ref.replace(/[0-9]/g,'').toUpperCase();
+        if(!colStr)continue;
+        let ci=0; for(let k=0;k<colStr.length;k++)ci=ci*26+(colStr.charCodeAt(k)-64); ci--;
+        let val='';
+        if(t==='inlineStr'){ const m=cInner.match(/<t[^>]*>([^<]*)<\\/t>/i); val=m?unesc(m[1]):''; }
+        else if(t==='s'){ const m=cInner.match(/<v[^>]*>(\\d+)<\\/v>/i); if(m)val=ssList[parseInt(m[1],10)]??''; }
+        else if(t==='b'){ const m=cInner.match(/<v[^>]*>([^<]+)<\\/v>/i); val=m?m[1].trim()==='1':false; }
+        else { const m=cInner.match(/<v[^>]*>([^<]*)<\\/v>/i); if(m){const r=m[1].trim();if(r!==''){const n=Number(r);val=isNaN(n)?unesc(r):n;}} }
+        grid[ri][ci]=val;
+      }
+    }
+    const rix=Object.keys(grid).map(Number).sort((a,b)=>a-b);
+    if(!rix.length)return[];
+    const mc=Math.max(...rix.map(r=>Math.max(-1,...Object.keys(grid[r]).map(Number))))+1;
+    const toA=ri=>{const a=[];for(let c=0;c<mc;c++)a.push(grid[ri]?.[c]??'');return a;};
+    const hdr=toA(rix[0]).map(h=>String(h??'').trim());
+    if(!hdr.some(h=>h!==''))return[];
+    return rix.slice(1).map(ri=>{const arr=toA(ri);const obj={};hdr.forEach((h,ci)=>{if(h!=='')obj[h]=arr[ci]??'';});return obj;})
+      .filter(o=>Object.values(o).some(v=>v!==''&&v!==null&&v!==undefined));
+  }
+
+  const result={};
+  sheetDefs.forEach(({name,rId},i)=>{
+    const wsPath=sheetFiles.get(rId)||('xl/worksheets/sheet'+(i+1)+'.xml');
+    result[name]=readSheet(wsPath,i);
+  });
+  return result;
+}
+
+// ── Handler do Worker ──
+self.onmessage = async function(e){
+  try {
+    self.postMessage({status:'progress', msg:'A descomprimir ficheiro ZIP...'});
+    const sheets = await readXLSX(e.data);
+    self.postMessage({status:'progress', msg:'A converter para JSON...'});
+    const json = JSON.stringify(sheets);
+    self.postMessage({status:'done', json});
+  } catch(err) {
+    self.postMessage({status:'error', msg: err.message || 'Erro desconhecido'});
+  }
+};
+`;
+
+/* Criar e reutilizar URL do worker */
+let _xlsxWorkerUrl = null;
+function getXlsxWorkerUrl(){
+  if(!_xlsxWorkerUrl){
+    const blob = new Blob([XLSX_WORKER_CODE], {type:'application/javascript'});
+    _xlsxWorkerUrl = URL.createObjectURL(blob);
+  }
+  return _xlsxWorkerUrl;
+}
+
+/* Função principal: usa Worker para converter XLSX → JSON sem travar o browser */
+function parseXLSXInWorker(arrayBuffer){
+  return new Promise((resolve, reject)=>{
+    let worker;
+    try { worker = new Worker(getXlsxWorkerUrl()); }
+    catch(e){ reject(new Error('Web Worker não suportado: '+e.message)); return; }
+
+    const timeout = setTimeout(()=>{
+      worker.terminate();
+      reject(new Error('Tempo limite excedido (60s). Ficheiro demasiado grande ou corrompido.'));
+    }, 60000);
+
+    worker.onmessage = (e)=>{
+      const d = e.data;
+      if(d.status === 'progress'){
+        console.log('[XLSX Worker]', d.msg);
+      } else if(d.status === 'done'){
+        clearTimeout(timeout);
+        worker.terminate();
+        try { resolve(JSON.parse(d.json)); }
+        catch(err){ reject(new Error('Erro ao parsear JSON do worker: '+err.message)); }
+      } else if(d.status === 'error'){
+        clearTimeout(timeout);
+        worker.terminate();
+        reject(new Error(d.msg));
+      }
+    };
+    worker.onerror = (e)=>{
+      clearTimeout(timeout);
+      worker.terminate();
+      reject(new Error('Worker error: '+(e.message||'desconhecido')));
+    };
+    // Transferir o ArrayBuffer para o worker (zero-copy)
+    worker.postMessage(arrayBuffer, [arrayBuffer]);
+  });
+}
+// ===================== FIM XLSX WEB WORKER =====================
+
 // ===================== SVG ICONS =====================
 const ICONS = {
   medical:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 0 1-2 2zm14-6H2V9a2 2 0 0 1 2-2h4V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2h4a2 2 0 0 1 2 2v6z"/><path d="M12 11v4M10 13h4"/></svg>`,
@@ -687,7 +985,14 @@ async function readXlsxDb() {
     const fh = await xlsxDirHandle.getFileHandle(XLSX_DB_FILENAME);
     const file = await fh.getFile();
     const buf = await file.arrayBuffer();
-    const sheets = await XLSXio.read(buf);
+    // Usar Web Worker para não travar o browser
+    let sheets;
+    try {
+      sheets = await parseXLSXInWorker(buf);
+    } catch(e) {
+      console.warn('readXlsxDb worker falhou, fallback directo:', e.message);
+      sheets = await XLSXio.read(buf);
+    }
     const tableMap = {
       'Produtos':'produtos','Fornecedores':'fornecedores','Prateleiras':'prateleiras',
       'Lotes':'lotes','Movimentacoes':'movimentacoes','Kits':'kits'
@@ -696,7 +1001,6 @@ async function readXlsxDb() {
     for (const [sn, rows] of Object.entries(sheets)) {
       const key = tableMap[sn];
       if (key && Array.isArray(rows) && rows.length && !rows[0].info) {
-        // Restore numeric ids and parse componentes for kits
         result[key] = rows.map(r => {
           const obj = {...r};
           if (obj.id) obj.id = Number(obj.id);
@@ -2584,83 +2888,79 @@ function exportDBXLSX() {
 function importDBXLSX(event) {
   const file = event.target.files[0];
   if (!file) return;
-  toast('info','A importar base de dados...','A descompressão e leitura do Excel pode demorar alguns segundos');
-  const reader = new FileReader();
-  reader.onload = async (e) => {
-    try {
-      const sheets = await XLSXio.read(e.target.result);
-      const sheetNames = Object.keys(sheets);
-
-      // Se não encontrou folhas, tentar forçar fallback puro (ignora DecompressionStream)
-      if (!sheetNames.length) {
-        toast('warning','A tentar método alternativo...','O primeiro método falhou, a tentar leitura alternativa');
-        await new Promise(r=>setTimeout(r,300));
-        // Forçar uso do inflatePure desactivando DecompressionStream temporariamente
-        const origDS = window.DecompressionStream;
-        try { window.DecompressionStream = undefined; } catch(_) {}
-        let sheets2 = {};
-        try {
-          sheets2 = await XLSXio.read(e.target.result);
-        } finally {
-          try { window.DecompressionStream = origDS; } catch(_) {}
-        }
-        const names2 = Object.keys(sheets2);
-        if(!names2.length){
-          toast('error','Ficheiro não reconhecido',
-            'Não foi possível ler o ficheiro. Certifique-se que guarda o ficheiro no formato .xlsx (Excel 2007+) e não .xls (Excel 97-2003).');
-          return;
-        }
-        // Usar resultado do fallback
-        Object.assign(sheets, sheets2);
-        sheetNames.push(...names2);
-      }
-
-      const ok = await confirm('Importar Base de Dados',
-        `Foram encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}.
-Importar irá substituir todos os dados actuais (exceto utilizadores). Continuar?`);
-      if (!ok) return;
-
-      const tableMap = {
-        'Produtos':'produtos','Fornecedores':'fornecedores',
-        'Prateleiras':'prateleiras','Lotes':'lotes',
-        'Movimentacoes':'movimentacoes','Movimentações':'movimentacoes','Kits':'kits',
-        // Aceitar também nomes em minúsculas ou com variações
-        'produtos':'produtos','fornecedores':'fornecedores','prateleiras':'prateleiras',
-        'lotes':'lotes','movimentacoes':'movimentacoes','kits':'kits',
-      };
-
-      let imported = 0;
-      for (const [sheetName, data] of Object.entries(sheets)) {
-        const key = tableMap[sheetName] || tableMap[sheetName.toLowerCase()];
-        if (key && Array.isArray(data) && data.length && !data[0].info) {
-          db.data[key] = data.map(r => {
-            const obj = {...r};
-            if (obj.id) obj.id = Number(obj.id);
-            if (key === 'kits' && typeof obj.componentes === 'string') {
-              try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
-            }
-            // Normalizar campo 'ativo' (booleano)
-            if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
-            else if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
-            else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
-            else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
-            return obj;
-          });
-          imported++;
-        }
-      }
-      db.save();
-      toast('success','Base de dados importada',`${imported} tabela(s) importada(s) com sucesso.`);
-      renderBaseDados();
-      updateAlertBadge();
-    } catch(err) {
-      console.error('importDBXLSX error:', err);
-      toast('error','Erro ao importar', err.message || 'Ficheiro XLSX inválido ou corrompido.');
-    }
-  };
-  reader.onerror = () => toast('error','Erro ao ler ficheiro','Não foi possível ler o ficheiro seleccionado.');
-  reader.readAsArrayBuffer(file);
   event.target.value = '';
+
+  // Normalizar as linhas importadas do Excel
+  function normalizeRows(key, data){
+    return data.map(r => {
+      const obj = {...r};
+      if (obj.id) obj.id = Number(obj.id);
+      if (key === 'kits' && typeof obj.componentes === 'string') {
+        try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
+      }
+      if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
+      else if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
+      else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
+      else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
+      return obj;
+    });
+  }
+
+  const tableMap = {
+    'Produtos':'produtos','Fornecedores':'fornecedores','Prateleiras':'prateleiras',
+    'Lotes':'lotes','Movimentacoes':'movimentacoes','Movimentações':'movimentacoes','Kits':'kits',
+    'produtos':'produtos','fornecedores':'fornecedores','prateleiras':'prateleiras',
+    'lotes':'lotes','movimentacoes':'movimentacoes','kits':'kits',
+  };
+
+  toast('info','A processar ficheiro XLSX...','O ficheiro está a ser lido em segundo plano — o sistema não vai travar');
+
+  // Ler o ArrayBuffer e enviar ao Web Worker
+  const reader = new FileReader();
+  reader.onerror = () => toast('error','Erro ao ler ficheiro','Não foi possível ler o ficheiro seleccionado.');
+  reader.onload = async (e) => {
+    const arrayBuffer = e.target.result;
+    let sheets = {};
+    try {
+      // Tentativa 1: Web Worker (não trava o browser)
+      sheets = await parseXLSXInWorker(arrayBuffer);
+    } catch(workerErr) {
+      console.warn('Worker falhou, a tentar directo:', workerErr.message);
+      try {
+        // Fallback: leitura directa (pode travar brevemente)
+        toast('warning','A usar método alternativo...','Worker indisponível, a ler directamente');
+        sheets = await XLSXio.read(arrayBuffer);
+      } catch(directErr) {
+        toast('error','Erro ao importar', directErr.message || 'Não foi possível ler o ficheiro XLSX.');
+        return;
+      }
+    }
+
+    const sheetNames = Object.keys(sheets);
+    if (!sheetNames.length) {
+      toast('error','Ficheiro vazio ou não reconhecido',
+        'Nenhuma folha encontrada. Certifique-se que o ficheiro está no formato .xlsx (Excel 2007+) e que tem dados.');
+      return;
+    }
+
+    const ok = await confirm('Importar Base de Dados',
+      `Encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}.\nImportar irá substituir os dados actuais (exceto utilizadores). Continuar?`);
+    if (!ok) return;
+
+    let imported = 0;
+    for (const [sheetName, data] of Object.entries(sheets)) {
+      const key = tableMap[sheetName] || tableMap[sheetName.toLowerCase()];
+      if (key && Array.isArray(data) && data.length && !data[0].info) {
+        db.data[key] = normalizeRows(key, data);
+        imported++;
+      }
+    }
+    db.save();
+    toast('success','Base de dados importada', `${imported} tabela(s) importada(s) com sucesso.`);
+    renderBaseDados();
+    updateAlertBadge();
+  };
+  reader.readAsArrayBuffer(file);
 }
 
 async function clearDB() {
