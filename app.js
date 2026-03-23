@@ -2726,113 +2726,129 @@ function renderBaseDados() {
     movimentacoes: db.getAll('movimentacoes').length,
     kits: db.getAll('kits').length,
   };
+  const totalRecs = Object.values(totals).reduce((a,b)=>a+b,0);
+
   document.getElementById('page-basedados').innerHTML = `
     <div class="page-header">
       <div>
         <div class="page-title">${ICONS.database} Base de Dados</div>
-        <div class="page-title-sub">Gestão, armazenamento e manutenção da base de dados do sistema</div>
+        <div class="page-title-sub">Gestão, armazenamento, exportação e importação da base de dados</div>
       </div>
     </div>
 
-    <!-- STORAGE MODE SELECTOR -->
-    <div class="card" style="margin-bottom:20px;">
+    <!-- STORAGE MODE -->
+    <div class="card" style="margin-bottom:18px;">
       <div class="card-header"><div class="card-title">${ICONS.settings} Modo de Armazenamento</div></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:4px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px;">
         <div class="db-mode-option ${mode==='localstorage'?'active':''}" onclick="switchDbMode('localstorage')" style="cursor:pointer;">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-            <div style="width:36px;height:36px;border-radius:10px;background:rgba(52,152,219,0.15);display:flex;align-items:center;justify-content:center;color:var(--info);">${ICONS.shield}</div>
-            <div>
-              <div style="font-weight:700;font-size:14px;color:var(--text-primary)">LocalStorage</div>
-              <div style="font-size:11px;color:var(--text-muted)">Armazenamento interno do browser</div>
-            </div>
-            ${mode==='localstorage'?`<span class="badge badge-success" style="margin-left:auto;">Activo</span>`:''}
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <div style="width:34px;height:34px;border-radius:8px;background:rgba(52,152,219,0.15);display:flex;align-items:center;justify-content:center;color:var(--info);">${ICONS.shield}</div>
+            <div style="flex:1"><div style="font-weight:700;font-size:13px;">LocalStorage</div><div style="font-size:10px;color:var(--text-muted)">Browser interno</div></div>
+            ${mode==='localstorage'?`<span class="badge badge-success">Activo</span>`:''}
           </div>
-          <div style="font-size:12px;color:var(--text-secondary);">Dados guardados no browser. Rápido, sempre disponível offline. Limitado ao browser actual.</div>
+          <div style="font-size:11px;color:var(--text-secondary);">Rápido, offline, disponível no browser actual.</div>
         </div>
         <div class="db-mode-option ${mode==='xlsx'?'active':''}" onclick="switchDbMode('xlsx')" style="cursor:pointer;">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-            <div style="width:36px;height:36px;border-radius:10px;background:rgba(0,184,148,0.15);display:flex;align-items:center;justify-content:center;color:var(--accent);">${ICONS.download}</div>
-            <div>
-              <div style="font-weight:700;font-size:14px;color:var(--text-primary)">Ficheiro .XLSX</div>
-              <div style="font-size:11px;color:var(--text-muted)">Base de dados em arquivo Excel</div>
-            </div>
-            ${mode==='xlsx'?`<span class="badge badge-success" style="margin-left:auto;">Activo</span>`:''}
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <div style="width:34px;height:34px;border-radius:8px;background:rgba(0,184,148,0.15);display:flex;align-items:center;justify-content:center;color:var(--accent);">${ICONS.download}</div>
+            <div style="flex:1"><div style="font-weight:700;font-size:13px;">Ficheiro .XLSX</div><div style="font-size:10px;color:var(--text-muted)">Excel externo</div></div>
+            ${mode==='xlsx'?`<span class="badge badge-success">Activo</span>`:''}
           </div>
-          <div style="font-size:12px;color:var(--text-secondary);">Dados guardados num ficheiro Excel na sua pasta. Portável e editável externamente.</div>
-          ${mode==='xlsx'?`<div style="margin-top:8px;padding:8px;background:var(--bg-input);border-radius:6px;font-size:11px;color:var(--accent);word-break:break-all;">${ICONS.map_pin} Pasta: <strong>${dirName}</strong> / ${XLSX_DB_FILENAME}</div>`:''}
-          ${mode==='xlsx'&&!xlsxDirHandle?`<button class="btn btn-warning" style="margin-top:8px;font-size:11px;padding:6px 10px;" onclick="doReconnectXlsx(event)">Reconectar Pasta</button>`:''}
+          <div style="font-size:11px;color:var(--text-secondary);">Portável, editável externamente no Excel.</div>
+          ${mode==='xlsx'&&!xlsxDirHandle?`<button class="btn btn-warning" style="margin-top:6px;font-size:11px;padding:5px 8px;width:100%;" onclick="doReconnectXlsx(event)">Reconectar Pasta</button>`:''}
         </div>
       </div>
     </div>
 
-    <div class="grid-2" style="gap:20px;">
+    <div class="grid-2" style="gap:18px;">
       <div>
-        <div class="card" style="margin-bottom:20px;">
-          <div class="card-header"><div class="card-title">${ICONS.info} Estatísticas da Base de Dados</div></div>
+        <!-- ESTATÍSTICAS -->
+        <div class="card" style="margin-bottom:18px;">
+          <div class="card-header"><div class="card-title">${ICONS.info} Estatísticas</div></div>
           <div class="db-stats-grid">
-            ${Object.entries(totals).map(([k,v])=>`
-              <div class="db-stat">
-                <div class="db-stat-val">${v}</div>
-                <div class="db-stat-lbl">${k.charAt(0).toUpperCase()+k.slice(1)}</div>
-              </div>
-            `).join('')}
-            <div class="db-stat">
-              <div class="db-stat-val" style="font-size:11px;">${mode==='xlsx'?'XLSX':'localStorage'}</div>
-              <div class="db-stat-lbl">Modo Activo</div>
-            </div>
-          </div>
-          <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">
-            ${ICONS.info} Última actualização: ${new Date().toLocaleString('pt-AO')}.
+            ${Object.entries(totals).map(([k,v])=>`<div class="db-stat"><div class="db-stat-val">${v}</div><div class="db-stat-lbl">${k.charAt(0).toUpperCase()+k.slice(1)}</div></div>`).join('')}
+            <div class="db-stat"><div class="db-stat-val" style="font-size:11px;">${totalRecs}</div><div class="db-stat-lbl">Total Registos</div></div>
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-header"><div class="card-title">${ICONS.download} Exportar / Importar (.XLSX)</div></div>
-          <div class="db-action-grid">
-            <button class="db-action-btn" onclick="exportDBXLSX()">
-              <div class="db-action-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);">${ICONS.download}</div>
-              <div class="db-action-title">Exportar Base de Dados</div>
-              <div class="db-action-desc">Guardar todos os dados em ficheiro .XLSX (backup)</div>
+        <!-- EXPORTAR -->
+        <div class="card" style="margin-bottom:18px;">
+          <div class="card-header"><div class="card-title">${ICONS.download} Exportar Base de Dados</div></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Escolha o formato de exportação:</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="db-action-btn" onclick="exportDB('xlsx')" style="flex-direction:row;align-items:center;gap:12px;padding:12px;">
+              <div class="db-action-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);flex-shrink:0;">${ICONS.download}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Exportar como .XLSX <span class="chip" style="font-size:9px;margin-left:4px;">Excel</span></div>
+                <div class="db-action-desc">Compatível com Microsoft Excel — editável externamente</div>
+              </div>
             </button>
-            <label class="db-action-btn" style="cursor:pointer;">
-              <div class="db-action-icon" style="background:rgba(52,152,219,0.1);color:var(--info);">${ICONS.upload}</div>
-              <div class="db-action-title">Importar Base de Dados</div>
-              <div class="db-action-desc">Restaurar dados de um ficheiro .XLSX</div>
-              <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="importDBXLSX(event)">
+            <button class="db-action-btn" onclick="exportDB('json')" style="flex-direction:row;align-items:center;gap:12px;padding:12px;">
+              <div class="db-action-icon" style="background:rgba(243,156,18,0.1);color:var(--warning);flex-shrink:0;">${ICONS.settings}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Exportar como .JSON <span class="chip" style="font-size:9px;margin-left:4px;">Portável</span></div>
+                <div class="db-action-desc">Formato universal — funciona em qualquer sistema ou dispositivo</div>
+              </div>
+            </button>
+            <button class="db-action-btn" onclick="exportDB('db')" style="flex-direction:row;align-items:center;gap:12px;padding:12px;">
+              <div class="db-action-icon" style="background:rgba(155,89,182,0.1);color:#9B59B6;flex-shrink:0;">${ICONS.database}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Exportar como .db <span class="chip" style="font-size:9px;margin-left:4px;">Backup</span></div>
+                <div class="db-action-desc">Ficheiro de base de dados — ideal para backup e restauro</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <!-- IMPORTAR -->
+        <div class="card" style="margin-bottom:18px;">
+          <div class="card-header"><div class="card-title">${ICONS.upload} Importar Base de Dados</div></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">Seleccione um ficheiro para importar:</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label class="db-action-btn" style="flex-direction:row;align-items:center;gap:12px;padding:12px;cursor:pointer;">
+              <div class="db-action-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);flex-shrink:0;">${ICONS.upload}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Importar .XLSX</div>
+                <div class="db-action-desc">Ficheiro Excel editado externamente</div>
+              </div>
+              <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="importDB(event,'xlsx')">
+            </label>
+            <label class="db-action-btn" style="flex-direction:row;align-items:center;gap:12px;padding:12px;cursor:pointer;">
+              <div class="db-action-icon" style="background:rgba(243,156,18,0.1);color:var(--warning);flex-shrink:0;">${ICONS.settings}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Importar .JSON</div>
+                <div class="db-action-desc">Ficheiro JSON exportado anteriormente</div>
+              </div>
+              <input type="file" accept=".json" style="display:none;" onchange="importDB(event,'json')">
+            </label>
+            <label class="db-action-btn" style="flex-direction:row;align-items:center;gap:12px;padding:12px;cursor:pointer;">
+              <div class="db-action-icon" style="background:rgba(155,89,182,0.1);color:#9B59B6;flex-shrink:0;">${ICONS.database}</div>
+              <div style="flex:1;text-align:left;">
+                <div class="db-action-title" style="margin-bottom:2px;">Importar .db</div>
+                <div class="db-action-desc">Ficheiro de base de dados (.db) exportado anteriormente</div>
+              </div>
+              <input type="file" accept=".db,.bandmed" style="display:none;" onchange="importDB(event,'db')">
             </label>
           </div>
         </div>
-      </div>
 
-      <div>
+        <!-- MANUTENÇÃO -->
         <div class="card">
           <div class="card-header"><div class="card-title">${ICONS.settings} Manutenção</div></div>
-          <div class="db-action-grid">
-            <button class="db-action-btn danger" onclick="clearDB()">
-              <div class="db-action-icon" style="background:rgba(231,76,60,0.1);color:var(--danger);">${ICONS.trash}</div>
-              <div class="db-action-title">Limpar Base de Dados</div>
-              <div class="db-action-desc">Eliminar todos os dados (mantém utilizadores)</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <button class="db-action-btn danger" onclick="clearDB()" style="flex-direction:row;align-items:center;gap:12px;padding:12px;">
+              <div class="db-action-icon" style="background:rgba(231,76,60,0.1);color:var(--danger);flex-shrink:0;">${ICONS.trash}</div>
+              <div style="text-align:left;"><div class="db-action-title" style="margin-bottom:2px;">Limpar Base de Dados</div><div class="db-action-desc">Eliminar todos os dados (mantém utilizadores)</div></div>
             </button>
           </div>
-        </div>
-
-        <div class="card" style="margin-top:20px;">
-          <div class="card-header"><div class="card-title">${ICONS.info} Estado do Sistema</div></div>
-          <div style="display:flex;flex-direction:column;gap:10px;">
-            ${[
-              ['Sistema','Hospital Municipal de Malanje','ok'],
-              ['Versão','v3.0.0','info'],
-              ['Armazenamento', mode==='xlsx'?`XLSX (${dirName})`:'localStorage','ok'],
-              ['Segurança','SHA-256 Passwords','ok'],
-              ['Utilizador',currentUser?.nome||'—','info'],
-              ['Função',currentUser?.funcao||'—','info'],
-              ['Sessão',new Date().toLocaleString('pt-AO'),'info'],
-            ].map(([l,v,t])=>`
-              <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;">
+          <div style="margin-top:14px;display:flex;flex-direction:column;gap:6px;">
+            ${[['Versão','v3.0.0'],['Armazenamento',mode==='xlsx'?`XLSX (${dirName})`:'localStorage'],['Segurança','SHA-256'],['Utilizador',currentUser?.nome||'—'],['Sessão',new Date().toLocaleString('pt-AO')]].map(([l,v])=>`
+              <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px;">
                 <span style="color:var(--text-muted)">${l}</span>
-                <span class="text-${t==='ok'?'accent':t==='info'?'secondary':'danger'}" style="font-weight:500;text-align:right;max-width:60%;word-break:break-all;">${v}</span>
-              </div>
-            `).join('')}
+                <span style="font-weight:500;color:var(--text-secondary);text-align:right;max-width:55%;word-break:break-all;">${v}</span>
+              </div>`).join('')}
           </div>
         </div>
       </div>
@@ -2875,44 +2891,76 @@ async function doReconnectXlsx(e) {
   }
 }
 
-function exportDBXLSX() {
-  try {
-    const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
-    const sheets = tables.map(t => ({
-      name: t.charAt(0).toUpperCase()+t.slice(1),
-      data: db.getAll(t, true).map(r => {
-        const obj = {...r};
-        if (t === 'kits' && Array.isArray(obj.componentes)) obj.componentes = JSON.stringify(obj.componentes);
-        return obj;
-      })
-    }));
-    sheets.push({ name: 'Meta', data: [{'Sistema':'HMM Deposito de Medicamentos','Versao':'3.0','Exportado em':new Date().toLocaleString('pt-AO'),'Utilizador':currentUser?.nome||'—'}] });
-    if (XLSXio.download(sheets, `hmm_database_${today()}.xlsx`)) {
-      toast('success','Base de dados exportada','Ficheiro .XLSX gerado com sucesso');
-    }
-  } catch(e) { toast('error','Erro ao exportar',e.message); }
+// ── Dados para exportar (tabelas + meta) ──
+function getExportData() {
+  const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
+  const data = {};
+  tables.forEach(t => {
+    data[t] = db.getAll(t, true).map(r => {
+      const obj = {...r};
+      if (t === 'kits' && Array.isArray(obj.componentes)) obj.componentes = JSON.stringify(obj.componentes);
+      return obj;
+    });
+  });
+  return data;
 }
 
-function importDBXLSX(event) {
+// ── Normalizar registo importado ──
+function normalizeImportRow(key, r) {
+  const obj = {...r};
+  if (obj.id) obj.id = Number(obj.id);
+  if (key === 'kits' && typeof obj.componentes === 'string') {
+    try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
+  }
+  if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
+  else if (obj.ativo === 'TRUE'  || obj.ativo === 'true'  || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
+  else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
+  else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
+  return obj;
+}
+
+// ── Download de blob ──
+function downloadBlob(content, filename, mime) {
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+// ── EXPORTAR (3 formatos) ──
+function exportDB(format) {
+  try {
+    const data = getExportData();
+    const ts = today();
+    if (format === 'xlsx') {
+      const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
+      const sheets = tables.map(t => ({ name: t.charAt(0).toUpperCase()+t.slice(1), data: data[t] }));
+      sheets.push({ name:'Meta', data:[{'Sistema':'HMM Deposito','Versao':'3.0','Exportado':new Date().toLocaleString('pt-AO'),'Utilizador':currentUser?.nome||'—'}] });
+      if (XLSXio.download(sheets, `hmm_database_${ts}.xlsx`)) toast('success','Exportado como .XLSX');
+    } else if (format === 'json') {
+      const payload = { __bandmed_version: '3.0', exportado: new Date().toISOString(), ...data };
+      downloadBlob(JSON.stringify(payload, null, 2), `hmm_database_${ts}.json`, 'application/json');
+      toast('success','Exportado como .JSON','Ficheiro JSON gerado com sucesso');
+    } else if (format === 'db') {
+      // .db = JSON com assinatura BANDMED para identificação na importação
+      const payload = { __type: 'BANDMED_DB', __version: '3.0', exportado: new Date().toISOString(), data };
+      downloadBlob(JSON.stringify(payload), `hmm_database_${ts}.db`, 'application/octet-stream');
+      toast('success','Exportado como .db','Ficheiro de base de dados gerado com sucesso');
+    }
+  } catch(e) { toast('error','Erro ao exportar', e.message); }
+}
+
+// ── Manter compatibilidade com chamadas antigas ──
+function exportDBXLSX() { exportDB('xlsx'); }
+
+// ── IMPORTAR (3 formatos) ──
+function importDB(event, format) {
   const file = event.target.files[0];
   if (!file) return;
   event.target.value = '';
-
-  // Normalizar as linhas importadas do Excel
-  function normalizeRows(key, data){
-    return data.map(r => {
-      const obj = {...r};
-      if (obj.id) obj.id = Number(obj.id);
-      if (key === 'kits' && typeof obj.componentes === 'string') {
-        try { obj.componentes = JSON.parse(obj.componentes); } catch { obj.componentes = []; }
-      }
-      if (obj.ativo === undefined || obj.ativo === '') obj.ativo = true;
-      else if (obj.ativo === 'TRUE' || obj.ativo === 'true' || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
-      else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
-      else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
-      return obj;
-    });
-  }
 
   const tableMap = {
     'Produtos':'produtos','Fornecedores':'fornecedores','Prateleiras':'prateleiras',
@@ -2921,55 +2969,87 @@ function importDBXLSX(event) {
     'lotes':'lotes','movimentacoes':'movimentacoes','kits':'kits',
   };
 
-  toast('info','A processar ficheiro XLSX...','O ficheiro está a ser lido em segundo plano — o sistema não vai travar');
-
-  // Ler o ArrayBuffer e enviar ao Web Worker
-  const reader = new FileReader();
-  reader.onerror = () => toast('error','Erro ao ler ficheiro','Não foi possível ler o ficheiro seleccionado.');
-  reader.onload = async (e) => {
-    const arrayBuffer = e.target.result;
-    let sheets = {};
-    try {
-      // Tentativa 1: Web Worker (não trava o browser)
-      sheets = await parseXLSXInWorker(arrayBuffer);
-    } catch(workerErr) {
-      console.warn('Worker falhou, a tentar directo:', workerErr.message);
-      try {
-        // Fallback: leitura directa (pode travar brevemente)
-        toast('warning','A usar método alternativo...','Worker indisponível, a ler directamente');
-        sheets = await XLSXio.read(arrayBuffer);
-      } catch(directErr) {
-        toast('error','Erro ao importar', directErr.message || 'Não foi possível ler o ficheiro XLSX.');
-        return;
-      }
-    }
-
-    const sheetNames = Object.keys(sheets);
-    if (!sheetNames.length) {
-      toast('error','Ficheiro vazio ou não reconhecido',
-        'Nenhuma folha encontrada. Certifique-se que o ficheiro está no formato .xlsx (Excel 2007+) e que tem dados.');
-      return;
-    }
-
+  async function applyImport(dataObj) {
+    // dataObj: { produtos:[...], fornecedores:[...], ... }
+    const keys = Object.keys(dataObj).filter(k => Array.isArray(dataObj[k]));
+    const names = keys.map(k => k.charAt(0).toUpperCase()+k.slice(1));
     const ok = await confirm('Importar Base de Dados',
-      `Encontradas ${sheetNames.length} folha(s): ${sheetNames.join(', ')}.\nImportar irá substituir os dados actuais (exceto utilizadores). Continuar?`);
+      `Encontradas: ${names.join(', ')}.\nImportar substituirá os dados actuais (exceto utilizadores). Continuar?`);
     if (!ok) return;
-
     let imported = 0;
-    for (const [sheetName, data] of Object.entries(sheets)) {
-      const key = tableMap[sheetName] || tableMap[sheetName.toLowerCase()];
-      if (key && Array.isArray(data) && data.length && !data[0].info) {
-        db.data[key] = normalizeRows(key, data);
+    keys.forEach(key => {
+      const data = dataObj[key];
+      if (Array.isArray(data) && data.length && !data[0].info) {
+        db.data[key] = data.map(r => normalizeImportRow(key, r));
         imported++;
       }
-    }
+    });
     db.save();
     toast('success','Base de dados importada', `${imported} tabela(s) importada(s) com sucesso.`);
     renderBaseDados();
     updateAlertBadge();
-  };
-  reader.readAsArrayBuffer(file);
+  }
+
+  if (format === 'json' || format === 'db') {
+    // JSON e .db são idênticos internamente — leitura de texto
+    const reader = new FileReader();
+    reader.onerror = () => toast('error','Erro ao ler ficheiro');
+    reader.onload = async (e) => {
+      try {
+        const parsed = JSON.parse(e.target.result);
+        let dataObj = {};
+        if (parsed.__type === 'BANDMED_DB' && parsed.data) {
+          // Formato .db
+          dataObj = parsed.data;
+        } else if (parsed.__bandmed_version) {
+          // Formato .json
+          const skip = new Set(['__bandmed_version','exportado']);
+          Object.keys(parsed).forEach(k => { if(!skip.has(k)) dataObj[k] = parsed[k]; });
+        } else {
+          // JSON genérico — tentar usar directamente
+          dataObj = parsed;
+        }
+        // Normalizar tableMap para chaves minúsculas
+        const normalized = {};
+        Object.entries(dataObj).forEach(([k, v]) => {
+          const mapped = tableMap[k] || tableMap[k.toLowerCase()];
+          if (mapped) normalized[mapped] = v;
+        });
+        if (!Object.keys(normalized).length) { toast('error','Ficheiro não reconhecido','Não foram encontradas tabelas válidas no ficheiro.'); return; }
+        await applyImport(normalized);
+      } catch(err) { toast('error','Erro ao importar', err.message || 'Ficheiro inválido'); }
+    };
+    reader.readAsText(file);
+
+  } else {
+    // XLSX — usar Web Worker para não travar
+    toast('info','A processar ficheiro XLSX...','A ler em segundo plano — o sistema não vai travar');
+    const reader = new FileReader();
+    reader.onerror = () => toast('error','Erro ao ler ficheiro');
+    reader.onload = async (e) => {
+      let sheets = {};
+      try { sheets = await parseXLSXInWorker(e.target.result); }
+      catch(we) {
+        try { sheets = await XLSXio.read(e.target.result); }
+        catch(de) { toast('error','Erro ao importar', de.message || 'XLSX inválido'); return; }
+      }
+      if (!Object.keys(sheets).length) {
+        toast('error','Ficheiro vazio','Nenhuma folha encontrada. Use .xlsx (Excel 2007+).');
+        return;
+      }
+      const normalized = {};
+      Object.entries(sheets).forEach(([k, v]) => {
+        const mapped = tableMap[k] || tableMap[k.toLowerCase()];
+        if (mapped) normalized[mapped] = v;
+      });
+      await applyImport(normalized);
+    };
+    reader.readAsArrayBuffer(file);
+  }
 }
+
+// ── Compatibilidade com chamadas antigas ──
+function importDBXLSX(event) { importDB(event, 'xlsx'); }
 
 async function clearDB() {
   const ok = await confirm('Limpar Base de Dados','Todos os dados serão eliminados permanentemente (utilizadores mantidos). Esta acção não pode ser revertida!');
@@ -3195,183 +3275,368 @@ async function deleteUser(id) {
 }
 
 // ===================== SINCRONIZAÇÃO PAGE =====================
-let syncConfig = JSON.parse(localStorage.getItem('hmm_sync_config')||'{"webAppUrl":"","sheetId":"","lastSync":"","status":"disconnected"}');
+let syncConfig = JSON.parse(localStorage.getItem('hmm_sync_config')||'{"webAppUrl":"","lastSync":"","status":"disconnected","supabaseUrl":"","supabaseKey":"","firebaseUrl":"","firebaseKey":"","cloudProvider":"none"}');
 
 function saveSyncConfig() {
   localStorage.setItem('hmm_sync_config', JSON.stringify(syncConfig));
 }
 
 function renderSincronizacao() {
-  const GAS_SCRIPT = `// Google Apps Script — Cole este código em Extensions > Apps Script
-// Deploy como Web App (acesso: "Anyone")
-function doPost(e) {
-  const data = JSON.parse(e.postData.contents);
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes'];
-  tables.forEach(t => {
-    let sheet = ss.getSheetByName(t);
-    if (!sheet) sheet = ss.insertSheet(t);
-    sheet.clearContents();
-    if (data[t] && data[t].length > 0) {
-      const headers = Object.keys(data[t][0]);
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-      const rows = data[t].map(r => headers.map(h => r[h] ?? ''));
-      sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  const GAS_SCRIPT = `// Google Apps Script — Cole no editor de Apps Script
+function doPost(e){
+  const data=JSON.parse(e.postData.contents);
+  const ss=SpreadsheetApp.getActiveSpreadsheet();
+  ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'].forEach(t=>{
+    let s=ss.getSheetByName(t)||ss.insertSheet(t);
+    s.clearContents();
+    if(data[t]&&data[t].length>0){
+      const h=Object.keys(data[t][0]);
+      s.getRange(1,1,1,h.length).setValues([h]);
+      s.getRange(2,1,data[t].length,h.length).setValues(data[t].map(r=>h.map(k=>r[k]??'')));
     }
   });
   return ContentService.createTextOutput(JSON.stringify({ok:true})).setMimeType(ContentService.MimeType.JSON);
 }
-function doGet(e) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes'];
-  const result = {};
-  tables.forEach(t => {
-    const sheet = ss.getSheetByName(t);
-    if (sheet) {
-      const vals = sheet.getDataRange().getValues();
-      if (vals.length > 1) {
-        const headers = vals[0];
-        result[t] = vals.slice(1).map(row => {
-          const obj = {};
-          headers.forEach((h,i) => { obj[h] = row[i]; });
-          return obj;
-        });
-      } else { result[t] = []; }
-    } else { result[t] = []; }
+function doGet(e){
+  const ss=SpreadsheetApp.getActiveSpreadsheet();
+  const result={};
+  ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'].forEach(t=>{
+    const s=ss.getSheetByName(t);
+    if(s){const v=s.getDataRange().getValues();if(v.length>1){const h=v[0];result[t]=v.slice(1).map(r=>{const o={};h.forEach((k,i)=>{o[k]=r[i];});return o;});}else result[t]=[];}else result[t]=[];
   });
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 }`;
 
+  const prov = syncConfig.cloudProvider || 'none';
   const statusColor = syncConfig.status==='connected'?'ok':syncConfig.status==='syncing'?'pulse':'err';
-  const statusLabel = syncConfig.status==='connected'?'Ligado':syncConfig.status==='syncing'?'A sincronizar...':syncConfig.status==='never'?'Nunca sincronizado':'Desligado';
+  const statusLabel = {connected:'Ligado',syncing:'A sincronizar...',disconnected:'Desligado',never:'Nunca sincronizado'}[syncConfig.status]||'Desligado';
 
   document.getElementById('page-sincronizacao').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">${ICONS.sync} Sincronização</div>
-        <div class="page-title-sub">Migração de dados Offline (localStorage) ↔ Online (Google Sheets)</div>
+        <div class="page-title">${ICONS.sync} Sincronização Cloud</div>
+        <div class="page-title-sub">Sincronizar dados com Google Sheets, Supabase ou Firebase</div>
       </div>
     </div>
 
-    <!-- STATUS -->
+    <!-- ESTADO -->
     <div class="sync-card">
       <div class="sync-card-header">
         <div class="sync-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);">${ICONS.cloud}</div>
-        <div>
+        <div style="flex:1">
           <div class="sync-card-title">Estado da Sincronização</div>
-          <div class="sync-card-desc">Última sincronização: ${syncConfig.lastSync||'Nunca'}</div>
+          <div class="sync-card-desc">Última sincronização: ${syncConfig.lastSync||'Nunca'} — Serviço: ${prov==='supabase'?'Supabase':prov==='firebase'?'Firebase':'Google Sheets'}</div>
         </div>
       </div>
       <div class="sync-status-row">
         <div class="sync-dot ${statusColor}"></div>
         <span>${statusLabel}</span>
-        ${syncConfig.webAppUrl ? `<span style="margin-left:auto;font-size:11px;color:var(--text-muted);word-break:break-all;">${syncConfig.webAppUrl.substring(0,60)}…</span>` : ''}
       </div>
     </div>
 
-    <!-- CONFIGURAÇÃO -->
+    <!-- SELETOR DE SERVIÇO -->
     <div class="sync-card">
       <div class="sync-card-header">
         <div class="sync-icon" style="background:rgba(52,152,219,0.1);color:var(--info);">${ICONS.settings}</div>
-        <div>
-          <div class="sync-card-title">Configuração Google Sheets</div>
-          <div class="sync-card-desc">Configure o URL da Google Apps Script Web App</div>
+        <div><div class="sync-card-title">Escolher Serviço Cloud</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:4px;">
+        ${[
+          ['none','Nenhum','Sem sincronização cloud','rgba(90,122,155,0.15)','var(--text-muted)'],
+          ['sheets','Google Sheets','Via Google Apps Script','rgba(52,152,219,0.15)','var(--info)'],
+          ['supabase','Supabase','Base de dados PostgreSQL','rgba(62,207,142,0.15)','#3ECF8E'],
+          ['firebase','Firebase','Google Firebase RTDB','rgba(255,160,0,0.15)','#FFA000'],
+        ].map(([id,label,desc,bg,col])=>`
+          <div onclick="selectSyncProvider('${id}')" style="cursor:pointer;padding:12px;border-radius:var(--radius-sm);border:2px solid ${prov===id?col:'var(--border)'};background:${prov===id?bg:'var(--bg-card)'};transition:var(--transition);text-align:center;">
+            <div style="font-weight:700;font-size:13px;color:${prov===id?col:'var(--text-secondary)'};">${label}</div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px;">${desc}</div>
+            ${prov===id?`<div style="margin-top:6px;"><span class="badge badge-success" style="font-size:9px;">Activo</span></div>`:''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- CONFIGURAÇÃO GOOGLE SHEETS (só se activo) -->
+    ${prov==='sheets'?`
+    <div class="sync-card">
+      <div class="sync-card-header">
+        <div class="sync-icon" style="background:rgba(52,152,219,0.15);color:var(--info);">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
         </div>
+        <div><div class="sync-card-title">Configuração Google Sheets</div></div>
       </div>
       <div class="config-field">
         <label>URL da Web App (Google Apps Script) <span style="color:var(--danger)">*</span></label>
         <input id="sync-webapp-url" placeholder="https://script.google.com/macros/s/.../exec" value="${syncConfig.webAppUrl||''}">
       </div>
       <div class="sync-actions">
-        <button class="btn btn-primary" onclick="saveSyncSettings()">${ICONS.check}<span class="btn-text-content">Guardar Configuração</span></button>
-        <button class="btn btn-secondary" onclick="testSyncConnection()" ${syncConfig.webAppUrl?'':'disabled'}>${ICONS.refresh}<span class="btn-text-content">Testar Ligação</span></button>
+        <button class="btn btn-primary" onclick="saveSyncSettings()">${ICONS.check} Guardar</button>
+        <button class="btn btn-secondary" onclick="testSyncConnection()" ${syncConfig.webAppUrl?'':'disabled'}>${ICONS.refresh} Testar</button>
       </div>
-    </div>
+      <div class="sync-actions" style="margin-top:10px;">
+        <button class="btn btn-danger" onclick="syncLocalToSheets()" ${syncConfig.webAppUrl?'':'disabled'} style="flex:1;">${ICONS.upload} Enviar → Sheets</button>
+        <button class="btn btn-primary" onclick="syncSheetsToLocal()" ${syncConfig.webAppUrl?'':'disabled'} style="flex:1;">${ICONS.download} Receber ← Sheets</button>
+      </div>
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:12px;color:var(--accent);font-weight:600;">Como configurar o Google Apps Script</summary>
+        <ol class="setup-steps-list" style="margin-top:8px;">
+          <li>Abra <a href="https://sheets.google.com" target="_blank" style="color:var(--accent)">Google Sheets</a> e crie uma nova folha</li>
+          <li>Clique <code>Extensões → Apps Script</code></li>
+          <li>Cole o código abaixo, guarde e clique <code>Implementar → Nova implementação</code></li>
+          <li>Tipo: <strong>Aplicação Web</strong>, Acesso: <strong>Qualquer pessoa</strong></li>
+          <li>Copie o URL e cole acima</li>
+        </ol>
+        <div class="script-code">${GAS_SCRIPT.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
+        <button class="btn btn-secondary" style="margin-top:8px;" onclick="copyGASScript()">${ICONS.check} Copiar Código</button>
+      </details>
+    </div>`:''}
 
-    <!-- ACÇÕES DE SINCRONIZAÇÃO -->
-    <div class="grid-2" style="gap:16px;margin-bottom:16px;">
-      <div class="sync-card" style="margin-bottom:0;">
-        <div class="sync-card-header">
-          <div class="sync-icon" style="background:rgba(231,76,60,0.1);color:var(--danger);">${ICONS.upload}</div>
-          <div>
-            <div class="sync-card-title">Exportar para Google Sheets</div>
-            <div class="sync-card-desc">Enviar dados locais (offline) para o Google Sheets (online)</div>
-          </div>
+    <!-- CONFIGURAÇÃO SUPABASE (só se activo) -->
+    ${prov==='supabase'?`
+    <div class="sync-card">
+      <div class="sync-card-header">
+        <div class="sync-icon" style="background:rgba(62,207,142,0.15);color:#3ECF8E;">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
         </div>
-        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
-          Envia todos os dados actuais do sistema (produtos, lotes, movimentações, etc.) para o Google Sheets. Os dados online serão substituídos.
-        </p>
-        <button class="btn btn-danger" onclick="syncLocalToSheets()" ${syncConfig.webAppUrl?'':'disabled'} style="width:100%;">
-          ${ICONS.upload}<span class="btn-text-content">Enviar Offline → Online</span>
-        </button>
+        <div><div class="sync-card-title">Configuração Supabase</div><div class="sync-card-desc">Conectar com base de dados PostgreSQL na cloud</div></div>
       </div>
-
-      <div class="sync-card" style="margin-bottom:0;">
-        <div class="sync-card-header">
-          <div class="sync-icon" style="background:rgba(0,184,148,0.1);color:var(--accent);">${ICONS.download}</div>
-          <div>
-            <div class="sync-card-title">Importar do Google Sheets</div>
-            <div class="sync-card-desc">Trazer dados do Google Sheets (online) para o local (offline)</div>
-          </div>
+      <div style="background:rgba(62,207,142,0.08);border:1px solid rgba(62,207,142,0.25);border-radius:var(--radius-sm);padding:10px 14px;font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+        ${ICONS.info} <strong>Supabase</strong> é uma alternativa open-source ao Firebase, gratuita até 500MB. Crie uma conta em <a href="https://supabase.com" target="_blank" style="color:#3ECF8E;">supabase.com</a>
+      </div>
+      <div class="form-grid form-grid-2">
+        <div class="field-wrap form-grid-full">
+          <label class="field-label">URL do Projecto Supabase <span class="field-req">*</span></label>
+          <input class="field-input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${syncConfig.supabaseUrl||''}">
         </div>
-        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:14px;">
-          Importa todos os dados do Google Sheets para o sistema local. Os dados locais actuais serão substituídos pelos dados online.
-        </p>
-        <button class="btn btn-primary" onclick="syncSheetsToLocal()" ${syncConfig.webAppUrl?'':'disabled'} style="width:100%;">
-          ${ICONS.download}<span class="btn-text-content">Receber Online → Offline</span>
-        </button>
+        <div class="field-wrap form-grid-full">
+          <label class="field-label">Chave API (anon/public) <span class="field-req">*</span></label>
+          <input class="field-input" id="sb-key" type="password" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." value="${syncConfig.supabaseKey||''}">
+        </div>
       </div>
-    </div>
+      <div class="sync-actions" style="margin-top:10px;">
+        <button class="btn btn-primary" onclick="saveSupabaseSettings()">${ICONS.check} Guardar</button>
+        <button class="btn btn-secondary" onclick="testSupabase()" ${syncConfig.supabaseUrl&&syncConfig.supabaseKey?'':'disabled'}>${ICONS.refresh} Testar</button>
+      </div>
+      <div class="sync-actions" style="margin-top:10px;">
+        <button class="btn btn-danger" onclick="syncToSupabase()" ${syncConfig.supabaseUrl&&syncConfig.supabaseKey?'':'disabled'} style="flex:1;">${ICONS.upload} Enviar → Supabase</button>
+        <button class="btn btn-primary" onclick="syncFromSupabase()" ${syncConfig.supabaseUrl&&syncConfig.supabaseKey?'':'disabled'} style="flex:1;">${ICONS.download} Receber ← Supabase</button>
+      </div>
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:12px;color:#3ECF8E;font-weight:600;">Como configurar o Supabase</summary>
+        <ol class="setup-steps-list" style="margin-top:8px;">
+          <li>Crie conta gratuita em <a href="https://supabase.com" target="_blank" style="color:#3ECF8E">supabase.com</a></li>
+          <li>Crie um novo projecto</li>
+          <li>Vá a <code>Project Settings → API</code></li>
+          <li>Copie o <strong>Project URL</strong> e a chave <strong>anon/public</strong></li>
+          <li>No editor SQL do Supabase, execute este comando para criar a tabela de sincronização:</li>
+        </ol>
+        <div class="script-code">CREATE TABLE IF NOT EXISTS bandmed_sync (
+  id TEXT PRIMARY KEY DEFAULT 'main',
+  data JSONB NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- Permitir acesso anónimo:
+ALTER TABLE bandmed_sync ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all" ON bandmed_sync FOR ALL USING (true) WITH CHECK (true);</div>
+      </details>
+    </div>`:''}
 
-    <!-- EXPORTAÇÃO MANUAL XLSX -->
+    <!-- CONFIGURAÇÃO FIREBASE (só se activo) -->
+    ${prov==='firebase'?`
+    <div class="sync-card">
+      <div class="sync-card-header">
+        <div class="sync-icon" style="background:rgba(255,160,0,0.15);color:#FFA000;">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 19h20L12 2z"/><path d="M12 6l-5 13h10L12 6z"/></svg>
+        </div>
+        <div><div class="sync-card-title">Configuração Firebase</div><div class="sync-card-desc">Conectar com Google Firebase Realtime Database</div></div>
+      </div>
+      <div style="background:rgba(255,160,0,0.08);border:1px solid rgba(255,160,0,0.25);border-radius:var(--radius-sm);padding:10px 14px;font-size:12px;color:var(--text-secondary);margin-bottom:12px;">
+        ${ICONS.info} <strong>Firebase RTDB</strong> é gratuito até 1GB de armazenamento. Aceda a <a href="https://console.firebase.google.com" target="_blank" style="color:#FFA000;">console.firebase.google.com</a>
+      </div>
+      <div class="form-grid form-grid-2">
+        <div class="field-wrap form-grid-full">
+          <label class="field-label">URL da Base de Dados Firebase <span class="field-req">*</span></label>
+          <input class="field-input" id="fb-url" placeholder="https://seu-projeto.firebaseio.com" value="${syncConfig.firebaseUrl||''}">
+        </div>
+        <div class="field-wrap form-grid-full">
+          <label class="field-label">Chave API Web <span class="field-req">*</span></label>
+          <input class="field-input" id="fb-key" type="password" placeholder="AIzaSy..." value="${syncConfig.firebaseKey||''}">
+        </div>
+      </div>
+      <div class="sync-actions" style="margin-top:10px;">
+        <button class="btn btn-primary" onclick="saveFirebaseSettings()">${ICONS.check} Guardar</button>
+        <button class="btn btn-secondary" onclick="testFirebase()" ${syncConfig.firebaseUrl?'':'disabled'}>${ICONS.refresh} Testar</button>
+      </div>
+      <div class="sync-actions" style="margin-top:10px;">
+        <button class="btn btn-danger" onclick="syncToFirebase()" ${syncConfig.firebaseUrl?'':'disabled'} style="flex:1;">${ICONS.upload} Enviar → Firebase</button>
+        <button class="btn btn-primary" onclick="syncFromFirebase()" ${syncConfig.firebaseUrl?'':'disabled'} style="flex:1;">${ICONS.download} Receber ← Firebase</button>
+      </div>
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:12px;color:#FFA000;font-weight:600;">Como configurar o Firebase</summary>
+        <ol class="setup-steps-list" style="margin-top:8px;">
+          <li>Aceda a <a href="https://console.firebase.google.com" target="_blank" style="color:#FFA000">console.firebase.google.com</a> e crie um projecto</li>
+          <li>Vá a <code>Build → Realtime Database → Create Database</code></li>
+          <li>Escolha a região e seleccione <strong>modo de teste</strong> (para desenvolvimento)</li>
+          <li>Copie o URL da base de dados (ex: <code>https://xxx.firebaseio.com</code>)</li>
+          <li>Vá a <code>Project Settings → General</code> e copie a <strong>Web API Key</strong></li>
+          <li>Cole ambos os valores acima e clique Guardar</li>
+        </ol>
+      </details>
+    </div>`:''}
+
+    <!-- EXPORTAÇÃO LOCAL -->
     <div class="sync-card">
       <div class="sync-card-header">
         <div class="sync-icon" style="background:rgba(243,156,18,0.1);color:var(--warning);">${ICONS.download}</div>
-        <div>
-          <div class="sync-card-title">Exportar para XLSX (backup local)</div>
-          <div class="sync-card-desc">Guardar todos os dados em ficheiro Excel como backup</div>
-        </div>
+        <div><div class="sync-card-title">Backup Local Rápido</div><div class="sync-card-desc">Exportar dados localmente sem precisar de internet</div></div>
       </div>
-      <div class="sync-actions">
-        <button class="btn btn-secondary" onclick="exportDBXLSX()">${ICONS.download}<span class="btn-text-content">Exportar XLSX</span></button>
-        <label class="btn btn-secondary" style="cursor:pointer;">
-          ${ICONS.upload}<span class="btn-text-content">Importar XLSX</span>
-          <input type="file" accept=".xlsx,.xls" style="display:none;" onchange="importDBXLSX(event)">
-        </label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="exportDB('xlsx')">${ICONS.download} .XLSX</button>
+        <button class="btn btn-secondary" onclick="exportDB('json')">${ICONS.download} .JSON</button>
+        <button class="btn btn-secondary" onclick="exportDB('db')">${ICONS.download} .db</button>
       </div>
-    </div>
-
-    <!-- INSTRUÇÕES CONFIGURAÇÃO GOOGLE APPS SCRIPT -->
-    <div class="sync-card">
-      <div class="sync-card-header">
-        <div class="sync-icon" style="background:rgba(155,89,182,0.1);color:#9B59B6;">${ICONS.info}</div>
-        <div>
-          <div class="sync-card-title">Como Configurar o Google Apps Script</div>
-          <div class="sync-card-desc">Siga estes passos para activar a sincronização com Google Sheets</div>
-        </div>
-      </div>
-      <ol class="setup-steps-list">
-        <li>Abra o <a href="https://sheets.google.com" target="_blank" style="color:var(--accent)">Google Sheets</a> e crie uma nova folha de cálculo</li>
-        <li>Clique em <code>Extensões</code> → <code>Apps Script</code></li>
-        <li>Cole o código abaixo no editor e guarde (<code>Ctrl+S</code>)</li>
-        <li>Clique em <code>Implementar</code> → <code>Nova implementação</code></li>
-        <li>Escolha <strong>Tipo: Aplicação Web</strong>, Acesso: <strong>Qualquer pessoa</strong></li>
-        <li>Clique em <code>Implementar</code> e copie o URL da Web App</li>
-        <li>Cole o URL no campo "Configuração" acima e clique em "Guardar"</li>
-      </ol>
-      <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">Código Google Apps Script:</div>
-      <div class="script-code">${GAS_SCRIPT.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>
-      <button class="btn btn-secondary" style="margin-top:10px;" onclick="copyGASScript()">
-        ${ICONS.check}<span class="btn-text-content">Copiar Código</span>
-      </button>
     </div>
   `;
+}
+
+function selectSyncProvider(prov) {
+  syncConfig.cloudProvider = prov;
+  saveSyncConfig();
+  renderSincronizacao();
 }
 
 function saveSyncSettings() {
   syncConfig.webAppUrl = document.getElementById('sync-webapp-url').value.trim();
   saveSyncConfig();
-  toast('success','Configuração guardada');
+  toast('success','Configuração Google Sheets guardada');
+  renderSincronizacao();
+}
+
+// ── SUPABASE ──
+function saveSupabaseSettings() {
+  syncConfig.supabaseUrl = document.getElementById('sb-url').value.trim().replace(/\/+$/,'');
+  syncConfig.supabaseKey = document.getElementById('sb-key').value.trim();
+  saveSyncConfig();
+  toast('success','Configuração Supabase guardada');
+  renderSincronizacao();
+}
+
+async function testSupabase() {
+  if (!syncConfig.supabaseUrl || !syncConfig.supabaseKey) { toast('error','Configuração incompleta'); return; }
+  toast('info','A testar ligação Supabase...');
+  try {
+    const r = await fetch(`${syncConfig.supabaseUrl}/rest/v1/bandmed_sync?select=id&limit=1`, {
+      headers: { 'apikey': syncConfig.supabaseKey, 'Authorization': `Bearer ${syncConfig.supabaseKey}` }
+    });
+    if (r.ok || r.status === 406) { // 406 = tabela existe mas query inválida — ligação funciona
+      syncConfig.status = 'connected'; saveSyncConfig();
+      toast('success','Supabase ligado!','A ligação foi bem-sucedida');
+    } else throw new Error(`HTTP ${r.status}`);
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Falha na ligação Supabase', e.message); }
+  renderSincronizacao();
+}
+
+async function syncToSupabase() {
+  if (!syncConfig.supabaseUrl || !syncConfig.supabaseKey) { toast('error','Configure o Supabase primeiro'); return; }
+  const ok = await confirm('Enviar para Supabase','Os dados do Supabase serão substituídos pelos dados locais. Continuar?');
+  if (!ok) return;
+  toast('info','A enviar para Supabase...');
+  syncConfig.status='syncing'; saveSyncConfig();
+  try {
+    const payload = { id:'main', data: JSON.stringify(getExportData()), updated_at: new Date().toISOString() };
+    const r = await fetch(`${syncConfig.supabaseUrl}/rest/v1/bandmed_sync`, {
+      method:'POST',
+      headers:{ 'apikey':syncConfig.supabaseKey, 'Authorization':`Bearer ${syncConfig.supabaseKey}`, 'Content-Type':'application/json', 'Prefer':'resolution=merge-duplicates' },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    syncConfig.status='connected'; syncConfig.lastSync=new Date().toLocaleString('pt-AO'); saveSyncConfig();
+    toast('success','Dados enviados para Supabase!');
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Erro ao enviar para Supabase', e.message); }
+  renderSincronizacao();
+}
+
+async function syncFromSupabase() {
+  if (!syncConfig.supabaseUrl || !syncConfig.supabaseKey) { toast('error','Configure o Supabase primeiro'); return; }
+  const ok = await confirm('Receber do Supabase','Os dados locais serão substituídos. Continuar?');
+  if (!ok) return;
+  toast('info','A receber do Supabase...');
+  syncConfig.status='syncing'; saveSyncConfig();
+  try {
+    const r = await fetch(`${syncConfig.supabaseUrl}/rest/v1/bandmed_sync?id=eq.main&select=data`, {
+      headers:{ 'apikey':syncConfig.supabaseKey, 'Authorization':`Bearer ${syncConfig.supabaseKey}` }
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const rows = await r.json();
+    if (!rows.length) throw new Error('Sem dados no Supabase. Envie os dados primeiro.');
+    const data = JSON.parse(rows[0].data);
+    const tables=['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
+    tables.forEach(t=>{ if(Array.isArray(data[t])) db.data[t]=data[t]; });
+    db.save();
+    syncConfig.status='connected'; syncConfig.lastSync=new Date().toLocaleString('pt-AO'); saveSyncConfig();
+    toast('success','Dados recebidos do Supabase!');
+    updateAlertBadge();
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Erro ao receber do Supabase', e.message); }
+  renderSincronizacao();
+}
+
+// ── FIREBASE ──
+function saveFirebaseSettings() {
+  syncConfig.firebaseUrl = document.getElementById('fb-url').value.trim().replace(/\/+$/,'');
+  syncConfig.firebaseKey = document.getElementById('fb-key').value.trim();
+  saveSyncConfig();
+  toast('success','Configuração Firebase guardada');
+  renderSincronizacao();
+}
+
+async function testFirebase() {
+  if (!syncConfig.firebaseUrl) { toast('error','URL Firebase não configurado'); return; }
+  toast('info','A testar ligação Firebase...');
+  try {
+    const r = await fetch(`${syncConfig.firebaseUrl}/bandmed_sync/ping.json?auth=${syncConfig.firebaseKey||''}`);
+    if (r.ok) { syncConfig.status='connected'; saveSyncConfig(); toast('success','Firebase ligado!'); }
+    else throw new Error(`HTTP ${r.status}`);
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Falha Firebase', e.message); }
+  renderSincronizacao();
+}
+
+async function syncToFirebase() {
+  if (!syncConfig.firebaseUrl) { toast('error','Configure o Firebase primeiro'); return; }
+  const ok = await confirm('Enviar para Firebase','Os dados do Firebase serão substituídos. Continuar?');
+  if (!ok) return;
+  toast('info','A enviar para Firebase...');
+  syncConfig.status='syncing'; saveSyncConfig();
+  try {
+    const payload = { data: getExportData(), updated_at: Date.now() };
+    const url = `${syncConfig.firebaseUrl}/bandmed_sync.json${syncConfig.firebaseKey?'?auth='+syncConfig.firebaseKey:''}`;
+    const r = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+    syncConfig.status='connected'; syncConfig.lastSync=new Date().toLocaleString('pt-AO'); saveSyncConfig();
+    toast('success','Dados enviados para Firebase!');
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Erro ao enviar para Firebase', e.message); }
+  renderSincronizacao();
+}
+
+async function syncFromFirebase() {
+  if (!syncConfig.firebaseUrl) { toast('error','Configure o Firebase primeiro'); return; }
+  const ok = await confirm('Receber do Firebase','Os dados locais serão substituídos. Continuar?');
+  if (!ok) return;
+  toast('info','A receber do Firebase...');
+  syncConfig.status='syncing'; saveSyncConfig();
+  try {
+    const url = `${syncConfig.firebaseUrl}/bandmed_sync.json${syncConfig.firebaseKey?'?auth='+syncConfig.firebaseKey:''}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const payload = await r.json();
+    if (!payload || !payload.data) throw new Error('Sem dados no Firebase. Envie os dados primeiro.');
+    const data = payload.data;
+    const tables=['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
+    tables.forEach(t=>{ if(Array.isArray(data[t])) db.data[t]=data[t]; });
+    db.save();
+    syncConfig.status='connected'; syncConfig.lastSync=new Date().toLocaleString('pt-AO'); saveSyncConfig();
+    toast('success','Dados recebidos do Firebase!');
+    updateAlertBadge();
+  } catch(e) { syncConfig.status='disconnected'; saveSyncConfig(); toast('error','Erro ao receber do Firebase', e.message); }
   renderSincronizacao();
 }
 
