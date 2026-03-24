@@ -1429,8 +1429,8 @@ function renderDashboard() {
   const lotes = db.getAll('lotes');
   const movs = db.getAll('movimentacoes');
 
-  const totalEntradas = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+m.quantidade,0);
-  const totalSaidas = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+m.quantidade,0);
+  const totalEntradas = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+  const totalSaidas = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
   const alerts = getAlerts();
 
   const topProd = produtos.map(p => {
@@ -1605,8 +1605,8 @@ function initDashboardCharts(movs, produtos) {
   destroyChart('chart-entradas-saidas');
   const ctx3 = document.getElementById('chart-entradas-saidas');
   if (ctx3) {
-    const totalE = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+m.quantidade,0);
-    const totalS = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+m.quantidade,0);
+    const totalE = movs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+    const totalS = movs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
     const hasData = totalE > 0 || totalS > 0;
     chartInstances['chart-entradas-saidas'] = new Chart(ctx3, {
       type:'doughnut',
@@ -1659,8 +1659,8 @@ function buildPeriodData(movs, period) {
       const label = d.toLocaleDateString('pt-AO',{day:'2-digit',month:'2-digit'});
       labels.push(label);
       const dayMovs = movs.filter(m=>m.data===key);
-      entradas.push(dayMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+m.quantidade,0));
-      saidas.push(dayMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+m.quantidade,0));
+      entradas.push(dayMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+      saidas.push(dayMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
     }
   } else if (period === 'month') {
     // Last 12 months
@@ -1673,8 +1673,8 @@ function buildPeriodData(movs, period) {
         const md = new Date(mv.data);
         return md.getFullYear()===y && md.getMonth()===m;
       });
-      entradas.push(mMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+m.quantidade,0));
-      saidas.push(mMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+m.quantidade,0));
+      entradas.push(mMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+      saidas.push(mMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
     }
   } else {
     // Last 5 years
@@ -1682,8 +1682,8 @@ function buildPeriodData(movs, period) {
       const y = now.getFullYear()-i;
       labels.push(String(y));
       const yMovs = movs.filter(mv=>new Date(mv.data).getFullYear()===y);
-      entradas.push(yMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+m.quantidade,0));
-      saidas.push(yMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+m.quantidade,0));
+      entradas.push(yMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+      saidas.push(yMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
     }
   }
   return { labels, entradas, saidas };
@@ -1738,7 +1738,7 @@ function renderProdutos() {
               <td>${p.preco?formatMoney(p.preco):'—'}</td>
               <td class="text-accent font-bold">${entradas}</td>
               <td class="text-danger font-bold">${saidas}</td>
-              <td class="font-bold ${belowMin?'text-danger':'text-accent'}">${stock}</td>
+              <td class="font-bold ${belowMin?'text-danger':'text-info'}">${stock}</td>
               <td><span class="badge ${belowMin?'badge-danger':'badge-success'}">${belowMin?'Stock Baixo':p.status||'Ativo'}</span></td>
               <td>
                 <div style="display:flex;gap:5px;">
@@ -2138,7 +2138,7 @@ function viewShelfProducts(pratId) {
             <td>${p.forma||'—'}</td>
             <td>${p.grupo_farmacologico||'—'}</td>
             <td>${p.stock_minimo||'—'}</td>
-            <td class="font-bold ${stock>0?'text-accent':'text-danger'}">${stock}</td>
+            <td class="font-bold ${stock>0?'text-info':'text-danger'}">${stock}</td>
           </tr>`;
         }).join('')}
       </tbody>
