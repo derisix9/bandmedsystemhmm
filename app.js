@@ -897,6 +897,15 @@ function icon(name, cls='') {
   return `<span class="${cls}" style="display:inline-flex;align-items:center;">${ICONS[name]||''}</span>`;
 }
 
+// ===================== SEARCH FOCUS UTILITY =====================
+// Restores focus + cursor to a search input after full-page re-render
+function refocus(id) {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(id);
+    if (el) { el.focus(); const len = el.value.length; el.setSelectionRange(len, len); }
+  });
+}
+
 // ===================== CRYPTO UTILITIES =====================
 async function hashPassword(pwd) {
   const encoder = new TextEncoder();
@@ -1034,7 +1043,8 @@ const DEFAULT_DB = {
   prateleiras: [],
   lotes: [],
   movimentacoes: [],
-  kits: []
+  kits: [],
+  logs: []             // System activity logs
 };
 
 class Database {
@@ -1080,6 +1090,7 @@ class Database {
     item.ativo = true;
     this.data[table].push(item);
     this.save();
+    if (table !== 'logs') addLog('insert', table, item.id, item);
     return item;
   }
   update(table, id, updates) {
@@ -1087,6 +1098,7 @@ class Database {
     if (idx === -1) return false;
     this.data[table][idx] = { ...this.data[table][idx], ...updates };
     this.save();
+    if (table !== 'logs') addLog('update', table, id, updates);
     return true;
   }
   remove(table, id) { return this.update(table, id, { ativo: false }); }
@@ -1109,6 +1121,61 @@ class Database {
 }
 
 const db = new Database();
+
+// ===================== LOGGING SYSTEM =====================
+const TABLE_LABELS = {
+  produtos: 'Produtos', fornecedores: 'Fornecedores', prateleiras: 'Prateleiras',
+  lotes: 'Lotes', movimentacoes: 'Movimentações', kits: 'Kits', usuarios: 'Utilizadores'
+};
+const ACTION_LABELS = {
+  insert: 'Criação', update: 'Actualização', remove: 'Eliminação',
+  login: 'Login', logout: 'Logout', view: 'Visualização', export: 'Exportação', clear: 'Limpeza'
+};
+const ACTION_COLORS = {
+  insert: '#22c55e', update: '#3b82f6', remove: '#ef4444',
+  login: '#8b5cf6', logout: '#f59e0b', view: '#6b7280', export: '#06b6d4', clear: '#f97316'
+};
+
+function addLog(action, module, recordId, details) {
+  const now = new Date();
+  const log = {
+    timestamp: now.toISOString(),
+    date: now.toLocaleDateString('pt-PT'),
+    time: now.toLocaleTimeString('pt-PT'),
+    action,
+    module: module || '',
+    module_label: TABLE_LABELS[module] || module || '',
+    record_id: recordId || null,
+    user_id: currentUser?.id || null,
+    user_name: currentUser?.nome || 'Sistema',
+    user_role: currentUser?.funcao || '',
+    details: details ? JSON.stringify(details).slice(0, 200) : '',
+    description: buildLogDescription(action, module, recordId, details)
+  };
+  const existing = db.data.logs || [];
+  log.id = existing.length ? Math.max(...existing.map(l => Number(l.id)||0)) + 1 : 1;
+  log.ativo = true;
+  db.data.logs.push(log);
+  // Keep max 2000 logs (remove oldest)
+  if (db.data.logs.length > 2000) db.data.logs = db.data.logs.slice(-2000);
+  db.save();
+}
+
+function buildLogDescription(action, module, recordId, details) {
+  const mod = TABLE_LABELS[module] || module || '';
+  const user = currentUser?.nome || 'Sistema';
+  if (action === 'insert') return `${user} criou um registo em ${mod} (ID: ${recordId})`;
+  if (action === 'update') {
+    if (details && details.ativo === false) return `${user} eliminou um registo em ${mod} (ID: ${recordId})`;
+    return `${user} actualizou um registo em ${mod} (ID: ${recordId})`;
+  }
+  if (action === 'remove') return `${user} eliminou um registo em ${mod} (ID: ${recordId})`;
+  if (action === 'login') return `Utilizador "${details?.nome || details?.username || user}" iniciou sessão`;
+  if (action === 'logout') return `Utilizador "${user}" encerrou sessão`;
+  if (action === 'export') return `${user} exportou dados de ${mod}`;
+  if (action === 'clear') return `${user} limpou dados de ${mod}`;
+  return `${user} — ${ACTION_LABELS[action]||action} em ${mod}`;
+}
 
 // ===================== APP STATE =====================
 let currentUser = null;
@@ -1275,6 +1342,7 @@ function setupLogin() {
     const found = db.data.usuarios.find(u => u.username === username && u.senha === hashed && u.ativo !== false);
     if (found) {
       currentUser = found;
+      addLog('login', 'usuarios', found.id, { nome: found.nome, username: found.username, funcao: found.funcao });
       setLoading(btn, false);
       document.getElementById('login').style.opacity='0';
       document.getElementById('login').style.transition='opacity 0.4s ease';
@@ -1325,6 +1393,7 @@ function setupSidebar() {
   document.getElementById('sidebar-user').addEventListener('click', () => {
     confirm('Terminar Sessão','Deseja terminar a sessão actual?').then(ok => {
       if (ok) {
+        addLog('logout', 'usuarios', currentUser?.id, null);
         currentUser = null;
         // Destroy all charts before leaving
         Object.keys(chartInstances).forEach(k => destroyChart(k));
@@ -1374,7 +1443,7 @@ function renderPage(page) {
     prateleiras:renderPrateleiras, lotes:renderLotes, movimentacoes:renderMovimentacoes,
     alertas:renderAlertas, relatorios:renderRelatorios, basedados:renderBaseDados,
     usuarios:renderUsuarios, sincronizacao:renderSincronizacao, kits:renderKits,
-    fichastock:renderFichaStock,
+    fichastock:renderFichaStock, logs:renderLogs,
   };
   if (renders[page]) renders[page]();
 }
@@ -1421,6 +1490,9 @@ function statCard(label, value, ico, color, rgb, sub) {
 
 // ===================== DASHBOARD PAGE =====================
 let dashChartPeriod = 'month'; // 'day' | 'month' | 'year'
+let dashChartDay   = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+let dashChartMonth = new Date().getMonth();   // 0-11
+let dashChartMYear = new Date().getFullYear(); // year for month mode
 
 function renderDashboard() {
   const produtos = db.getAll('produtos');
@@ -1454,12 +1526,28 @@ function renderDashboard() {
     <!-- CHARTS ROW -->
     <div class="charts-row">
       <div class="chart-card">
-        <div class="chart-title">
-          ${ICONS.bar_chart} Consumo de Medicamentos
-          <div class="chart-period-btns">
-            <button class="chart-period-btn ${dashChartPeriod==='day'?'active':''}" onclick="setDashPeriod('day')">Dia</button>
-            <button class="chart-period-btn ${dashChartPeriod==='month'?'active':''}" onclick="setDashPeriod('month')">Mês</button>
-            <button class="chart-period-btn ${dashChartPeriod==='year'?'active':''}" onclick="setDashPeriod('year')">Ano</button>
+        <div class="chart-title" style="flex-wrap:wrap;gap:8px;">
+          <span>${ICONS.bar_chart} Consumo de Medicamentos</span>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <div class="chart-period-btns">
+              <button class="chart-period-btn ${dashChartPeriod==='day'?'active':''}" onclick="setDashPeriod('day')">Dia</button>
+              <button class="chart-period-btn ${dashChartPeriod==='month'?'active':''}" onclick="setDashPeriod('month')">Mês</button>
+              <button class="chart-period-btn ${dashChartPeriod==='year'?'active':''}" onclick="setDashPeriod('year')">Ano</button>
+            </div>
+            ${dashChartPeriod==='day' ? `
+              <input type="date" id="dash-day-picker" value="${dashChartDay}"
+                style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--text-primary);"
+                oninput="dashChartDay=this.value;updateConsumoChart()">
+            ` : dashChartPeriod==='month' ? `
+              <select id="dash-month-picker"
+                style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--text-primary);"
+                onchange="dashChartMonth=parseInt(this.value);updateConsumoChart()">
+                ${['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'].map((m,i)=>`<option value="${i}" ${dashChartMonth===i?'selected':''}>${m}</option>`).join('')}
+              </select>
+              <input type="number" id="dash-myear-picker" value="${dashChartMYear}" min="2000" max="2099"
+                style="background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:12px;color:var(--text-primary);width:72px;"
+                oninput="dashChartMYear=parseInt(this.value)||new Date().getFullYear();updateConsumoChart()">
+            ` : ''}
           </div>
         </div>
         <div class="chart-container">
@@ -1536,7 +1624,40 @@ function renderDashboard() {
 
 function setDashPeriod(period) {
   dashChartPeriod = period;
+  // Reset to today/current month when switching modes
+  if (period === 'day')   dashChartDay   = new Date().toISOString().split('T')[0];
+  if (period === 'month') { dashChartMonth = new Date().getMonth(); dashChartMYear = new Date().getFullYear(); }
   renderDashboard();
+}
+
+function updateConsumoChart() {
+  const movs = db.getAll('movimentacoes');
+  const CHART_COLORS = {
+    entrada: 'rgba(39,174,96,0.85)', saida: 'rgba(231,76,60,0.85)',
+    border_entrada: '#27AE60', border_saida: '#E74C3C',
+  };
+  destroyChart('chart-consumo');
+  const ctx1 = document.getElementById('chart-consumo');
+  if (!ctx1) return;
+  const { labels, entradas, saidas } = buildPeriodData(movs, dashChartPeriod);
+  chartInstances['chart-consumo'] = new Chart(ctx1, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'Entradas', data: entradas, backgroundColor: CHART_COLORS.entrada, borderColor: CHART_COLORS.border_entrada, borderWidth:1, borderRadius:4 },
+        { label:'Saídas',   data: saidas,   backgroundColor: CHART_COLORS.saida,   borderColor: CHART_COLORS.border_saida,   borderWidth:1, borderRadius:4 }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ color:'#8BA7C7', font:{size:11} } } },
+      scales:{
+        x:{ ticks:{ color:'#5A7A9B', font:{size:10}, maxRotation: dashChartPeriod==='month'?45:0 }, grid:{ color:'rgba(30,58,95,0.5)' } },
+        y:{ ticks:{ color:'#5A7A9B', font:{size:10} }, grid:{ color:'rgba(30,58,95,0.5)' }, beginAtZero:true }
+      }
+    }
+  });
 }
 
 function initDashboardCharts(movs, produtos) {
@@ -1652,30 +1773,38 @@ function buildPeriodData(movs, period) {
   let labels = [], entradas = [], saidas = [];
 
   if (period === 'day') {
-    // Last 14 days
-    for (let i=13; i>=0; i--) {
-      const d = new Date(now); d.setDate(d.getDate()-i);
-      const key = d.toISOString().split('T')[0];
-      const label = d.toLocaleDateString('pt-AO',{day:'2-digit',month:'2-digit'});
-      labels.push(label);
-      const dayMovs = movs.filter(m=>m.data===key);
-      entradas.push(dayMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
-      saidas.push(dayMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+    // Show 24 hourly bars for the selected day
+    const selDate = dashChartDay || now.toISOString().split('T')[0];
+    const dayMovs = movs.filter(m => m.data === selDate);
+    // Group by hour
+    for (let h = 0; h < 24; h++) {
+      labels.push(String(h).padStart(2,'0') + 'h');
+      // movimentacoes don't store hour, so spread evenly in a single "All day" bar at h=0
+      // Show just one bar "Dia todo" if no hour info, else spread
+      entradas.push(h === 12 ? dayMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0) : 0);
+      saidas.push(h === 12 ? dayMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0) : 0);
     }
+    // If no hour field, just show a clean single-day summary with one bar
+    const totalE = dayMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+    const totalS = dayMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+    const [y,mo,d] = selDate.split('-');
+    labels   = [selDate ? `${d}/${mo}/${y}` : 'Dia'];
+    entradas = [totalE];
+    saidas   = [totalS];
+
   } else if (period === 'month') {
-    // Last 12 months
-    const monthNames = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
-    for (let i=11; i>=0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
-      const y = d.getFullYear(), m = d.getMonth();
-      labels.push(monthNames[m]+' '+String(y).slice(2));
-      const mMovs = movs.filter(mv=>{
-        const md = new Date(mv.data);
-        return md.getFullYear()===y && md.getMonth()===m;
-      });
-      entradas.push(mMovs.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
-      saidas.push(mMovs.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+    // Show each day of the selected month
+    const selMonth = (typeof dashChartMonth === 'number') ? dashChartMonth : now.getMonth();
+    const selYear  = dashChartMYear || now.getFullYear();
+    const daysInMonth = new Date(selYear, selMonth + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+      const key = `${selYear}-${String(selMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      labels.push(String(d));
+      const dm = movs.filter(m => m.data === key);
+      entradas.push(dm.filter(m=>m.tipo==='Entrada').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
+      saidas.push(dm.filter(m=>m.tipo==='Saída').reduce((s,m)=>s+(Number(m.quantidade)||0),0));
     }
+
   } else {
     // Last 5 years
     for (let i=4; i>=0; i--) {
@@ -1695,6 +1824,7 @@ function renderProdutos() {
   const prateleiras = db.getAll('prateleiras');
   let produtos = db.getAll('produtos');
   if (prodSearch) produtos = produtos.filter(p => p.nome.toLowerCase().includes(prodSearch.toLowerCase()) || (p.grupo_farmacologico||'').toLowerCase().includes(prodSearch.toLowerCase()));
+  produtos.sort((a, b) => (a.nome||'').localeCompare(b.nome||'', 'pt', {sensitivity:'base'}));
 
   document.getElementById('page-produtos').innerHTML = `
     <div class="page-header">
@@ -1714,7 +1844,7 @@ function renderProdutos() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" placeholder="Pesquisar produto..." value="${prodSearch}" oninput="prodSearch=this.value;renderProdutos()">
+            <input class="search-input" id="search-produtos" placeholder="Pesquisar produto..." value="${prodSearch}" oninput="prodSearch=this.value;renderProdutos()">
           </div>
         </div>
       </div>
@@ -1805,6 +1935,7 @@ function renderProdutos() {
       </div>
     </div>
   `;
+  refocus('search-produtos');
 }
 
 function openProdutoModal(id=null) {
@@ -1878,7 +2009,7 @@ function renderFornecedores() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" placeholder="Pesquisar..." value="${fornSearch}" oninput="fornSearch=this.value;renderFornecedores()">
+            <input class="search-input" id="search-fornecedores" placeholder="Pesquisar..." value="${fornSearch}" oninput="fornSearch=this.value;renderFornecedores()">
           </div>
         </div>
       </div>
@@ -1943,6 +2074,7 @@ function renderFornecedores() {
       </div>
     </div>
   `;
+  refocus('search-fornecedores');
 }
 
 function openFornecedorModal(id=null) {
@@ -2158,6 +2290,11 @@ function renderLotes() {
   if (loteFilter==='ativos') lotes = lotes.filter(l=>daysUntil(l.validade)>=0);
   if (loteFilter==='avencer') lotes = lotes.filter(l=>{ const d=daysUntil(l.validade); return d>=0&&d<=90; });
   if (loteFilter==='vencidos') lotes = lotes.filter(l=>daysUntil(l.validade)<0);
+  lotes.sort((a, b) => {
+    const nA = (db.getById('produtos', a.produto_id)?.nome || '').toLowerCase();
+    const nB = (db.getById('produtos', b.produto_id)?.nome || '').toLowerCase();
+    return nA.localeCompare(nB, 'pt', {sensitivity:'base'});
+  });
 
   document.getElementById('page-lotes').innerHTML = `
     <div class="page-header">
@@ -2175,7 +2312,7 @@ function renderLotes() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" placeholder="Pesquisar lote..." value="${loteSearch}" oninput="loteSearch=this.value;renderLotes()">
+            <input class="search-input" id="search-lotes" placeholder="Pesquisar lote..." value="${loteSearch}" oninput="loteSearch=this.value;renderLotes()">
           </div>
           <select class="select-filter" onchange="loteFilter=this.value;renderLotes()">
             <option value="todos" ${loteFilter==='todos'?'selected':''}>Todos</option>
@@ -2265,6 +2402,7 @@ function renderLotes() {
       </div>
     </div>
   `;
+  refocus('search-lotes');
 }
 
 function openLoteModal(id=null) {
@@ -2382,7 +2520,7 @@ function renderMovimentacoes() {
         <div class="table-actions" style="flex-wrap:wrap;gap:8px;">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" placeholder="Pesquisar produto/destino..." value="${movSearch}" oninput="movSearch=this.value;renderMovimentacoes()">
+            <input class="search-input" id="search-movimentacoes" placeholder="Pesquisar produto/destino..." value="${movSearch}" oninput="movSearch=this.value;renderMovimentacoes()">
           </div>
           <select class="select-filter" onchange="movFilter=this.value;renderMovimentacoes()">
             <option value="todos" ${movFilter==='todos'?'selected':''}>Todos os tipos</option>
@@ -2438,10 +2576,17 @@ function renderMovimentacoes() {
           <div class="form-grid form-grid-2">
             <div class="field-wrap">
               <label class="field-label">${ICONS.pill} Produto <span class="field-req">*</span></label>
-              <select class="field-select" id="mov-produto" onchange="updateMovLotes()">
-                <option value="">Seleccionar produto...</option>
-                ${produtos.map(p=>`<option value="${p.id}">${p.nome}</option>`).join('')}
-              </select>
+              <div class="combo-wrap" id="combo-mov-produto-wrap">
+                <input class="field-input" id="combo-mov-produto-input" autocomplete="off"
+                  placeholder="Escrever ou seleccionar produto..."
+                  oninput="filterMovCombo(this.value)"
+                  onfocus="openMovCombo()"
+                  onblur="setTimeout(()=>closeMovCombo(),180)">
+                <input type="hidden" id="mov-produto">
+                <div class="combo-dropdown" id="combo-mov-produto-list">
+                  ${produtos.map(p=>`<div class="combo-option" data-id="${p.id}" onmousedown="selectMovCombo(${p.id},'${p.nome.replace(/'/g,"\\'")}')"> ${p.nome}</div>`).join('')}
+                </div>
+              </div>
             </div>
             <div class="field-wrap">
               <label class="field-label">${ICONS.movement} Tipo <span class="field-req">*</span></label>
@@ -2483,6 +2628,7 @@ function renderMovimentacoes() {
       </div>
     </div>
   `;
+  refocus('search-movimentacoes');
 }
 
 function updateMovLotes() {
@@ -2503,7 +2649,9 @@ function openMovModal(id=null) {
   if(id){
     const m=db.getById('movimentacoes',id);
     if(m){
+      const prod = db.getById('produtos', m.produto_id);
       document.getElementById('mov-produto').value=m.produto_id||'';
+      document.getElementById('combo-mov-produto-input').value = prod ? prod.nome : '';
       updateMovLotes();
       document.getElementById('mov-tipo').value=m.tipo||'Entrada';
       document.getElementById('mov-lote').value=m.lote_id||'';
@@ -2514,6 +2662,7 @@ function openMovModal(id=null) {
     }
   } else {
     document.getElementById('mov-produto').value='';
+    document.getElementById('combo-mov-produto-input').value='';
     document.getElementById('mov-tipo').value='Entrada';
     document.getElementById('mov-lote').value='';
     document.getElementById('mov-quantidade').value='';
@@ -2896,7 +3045,8 @@ function getExportData() {
   const tables = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits'];
   const data = {};
   tables.forEach(t => {
-    data[t] = db.getAll(t, true).map(r => {
+    // includeDeleted=false — registos eliminados não são exportados
+    data[t] = db.getAll(t, false).map(r => {
       const obj = {...r};
       if (t === 'kits' && Array.isArray(obj.componentes)) obj.componentes = JSON.stringify(obj.componentes);
       return obj;
@@ -4203,7 +4353,7 @@ function renderKits() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" placeholder="Pesquisar kit..." value="${kitSearch}" oninput="kitSearch=this.value;renderKits()">
+            <input class="search-input" id="search-kits" placeholder="Pesquisar kit..." value="${kitSearch}" oninput="kitSearch=this.value;renderKits()">
           </div>
         </div>
       </div>
@@ -4323,6 +4473,7 @@ function renderKits() {
       </div>
     </div>
   `;
+  refocus('search-kits');
 }
 
 function renderKitComponentsList() {
@@ -4484,4 +4635,263 @@ async function saveKitSaida() {
   closeModal('modal-kit-saida');
   renderKits();
   updateAlertBadge();
+}
+
+// ===================== LOGS PAGE =====================
+let logsFilter = { action: '', module: '', search: '', date: '' };
+let logsPage = 1;
+const LOGS_PER_PAGE = 50;
+
+function renderLogs() {
+  const allLogs = (db.data.logs || []).slice().reverse(); // most recent first
+  const modules = [...new Set(allLogs.map(l => l.module).filter(Boolean))];
+  const actions = [...new Set(allLogs.map(l => l.action).filter(Boolean))];
+
+  // Apply filters
+  let filtered = allLogs.filter(l => {
+    const matchAction = !logsFilter.action || l.action === logsFilter.action;
+    const matchModule = !logsFilter.module || l.module === logsFilter.module;
+    const matchDate   = !logsFilter.date   || l.date === logsFilter.date;
+    const matchSearch = !logsFilter.search || 
+      (l.description || '').toLowerCase().includes(logsFilter.search.toLowerCase()) ||
+      (l.user_name || '').toLowerCase().includes(logsFilter.search.toLowerCase());
+    return matchAction && matchModule && matchDate && matchSearch;
+  });
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / LOGS_PER_PAGE));
+  if (logsPage > totalPages) logsPage = totalPages;
+  const start = (logsPage - 1) * LOGS_PER_PAGE;
+  const paginated = filtered.slice(start, start + LOGS_PER_PAGE);
+
+  // Stats
+  const today = new Date().toLocaleDateString('pt-PT');
+  const todayCount   = allLogs.filter(l => l.date === today).length;
+  const loginCount   = allLogs.filter(l => l.action === 'login').length;
+  const insertCount  = allLogs.filter(l => l.action === 'insert').length;
+  const deleteCount  = allLogs.filter(l => l.action === 'update' && l.details && l.details.includes('"ativo":false')).length;
+
+  const actionBadgeColor = a => ({
+    insert:'#22c55e', update:'#3b82f6', remove:'#ef4444',
+    login:'#8b5cf6', logout:'#f59e0b', view:'#6b7280', export:'#06b6d4', clear:'#f97316'
+  }[a] || '#6b7280');
+
+  const actionIcon = a => ({
+    insert: ICONS.plus,
+    update: ICONS.edit,
+    remove: ICONS.trash,
+    login:  ICONS.lock,
+    logout: ICONS.logout,
+    export: ICONS.download,
+    clear:  ICONS.trash,
+    view:   ICONS.eye,
+  }[a] || ICONS.info);
+
+  const moduleIcon = m => ({
+    produtos: ICONS.pill, fornecedores: ICONS.supplier, prateleiras: ICONS.shelf,
+    lotes: ICONS.lot, movimentacoes: ICONS.movement, kits: ICONS.layers,
+    usuarios: ICONS.users
+  }[m] || ICONS.database);
+
+  document.getElementById('page-logs').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">${ICONS.list} Registos do Sistema (Logs)</div>
+        <div class="page-title-sub">Histórico completo de todas as acções realizadas no sistema</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="exportLogs()">${ICONS.download} Exportar CSV</button>
+        ${currentUser?.funcao === 'Administrador' ? `<button class="btn btn-secondary" style="color:var(--danger);border-color:var(--danger);" onclick="clearLogs()">${ICONS.trash} Limpar Logs</button>` : ''}
+        <button class="btn btn-secondary" onclick="renderLogs()">${ICONS.refresh} Actualizar</button>
+      </div>
+    </div>
+
+    <!-- STAT CARDS -->
+    <div class="grid-4" style="gap:16px;margin-bottom:20px;">
+      <div class="card" style="display:flex;align-items:center;gap:14px;padding:16px 20px;">
+        <div class="stat-icon" style="background:rgba(99,102,241,0.15);color:#6366f1;">${ICONS.list}</div>
+        <div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">${allLogs.length}</div><div style="font-size:12px;color:var(--text-muted)">Total de Registos</div></div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:14px;padding:16px 20px;">
+        <div class="stat-icon" style="background:rgba(34,197,94,0.15);color:#22c55e;">${ICONS.calendar}</div>
+        <div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">${todayCount}</div><div style="font-size:12px;color:var(--text-muted)">Acções Hoje</div></div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:14px;padding:16px 20px;">
+        <div class="stat-icon" style="background:rgba(139,92,246,0.15);color:#8b5cf6;">${ICONS.users}</div>
+        <div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">${loginCount}</div><div style="font-size:12px;color:var(--text-muted)">Total de Logins</div></div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:14px;padding:16px 20px;">
+        <div class="stat-icon" style="background:rgba(239,68,68,0.15);color:#ef4444;">${ICONS.trash}</div>
+        <div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">${deleteCount}</div><div style="font-size:12px;color:var(--text-muted)">Eliminações</div></div>
+      </div>
+    </div>
+
+    <!-- FILTERS -->
+    <div class="card" style="padding:16px 20px;margin-bottom:16px;">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+        <div style="flex:1;min-width:180px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Pesquisar</div>
+          <div style="position:relative;">
+            <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-muted);width:16px;height:16px;display:inline-flex;">${ICONS.search}</span>
+            <input class="field-input" id="search-logs" style="padding-left:34px;" placeholder="Descrição ou utilizador…" value="${logsFilter.search}" oninput="logsFilter.search=this.value;logsPage=1;renderLogs()">
+          </div>
+        </div>
+        <div style="min-width:150px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Acção</div>
+          <select class="field-select" onchange="logsFilter.action=this.value;logsPage=1;renderLogs()">
+            <option value="">Todas as Acções</option>
+            ${Object.entries(ACTION_LABELS).map(([k,v]) => `<option value="${k}" ${logsFilter.action===k?'selected':''}>${v}</option>`).join('')}
+          </select>
+        </div>
+        <div style="min-width:150px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Módulo</div>
+          <select class="field-select" onchange="logsFilter.module=this.value;logsPage=1;renderLogs()">
+            <option value="">Todos os Módulos</option>
+            ${Object.entries(TABLE_LABELS).map(([k,v]) => `<option value="${k}" ${logsFilter.module===k?'selected':''}>${v}</option>`).join('')}
+          </select>
+        </div>
+        <div style="min-width:140px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Data</div>
+          <input type="date" class="field-input" value="${logsFilter.date ? new Date(logsFilter.date.split('/').reverse().join('-')).toISOString().split('T')[0] : ''}" oninput="const d=this.value?new Date(this.value).toLocaleDateString('pt-PT'):'';logsFilter.date=d;logsPage=1;renderLogs()">
+        </div>
+        <button class="btn btn-secondary" onclick="logsFilter={action:'',module:'',search:'',date:''};logsPage=1;renderLogs()" style="height:38px;">${ICONS.x} Limpar Filtros</button>
+      </div>
+    </div>
+
+    <!-- TABLE -->
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">${ICONS.activity} Registos <span class="chip">${filtered.length}</span></div>
+        <div style="font-size:13px;color:var(--text-muted);">Página ${logsPage} de ${totalPages} &nbsp;·&nbsp; A mostrar ${paginated.length} de ${total}</div>
+      </div>
+      ${paginated.length ? `
+      <table class="data-table">
+        <thead><tr>
+          <th style="width:140px;">Data / Hora</th>
+          <th style="width:110px;">Acção</th>
+          <th style="width:120px;">Módulo</th>
+          <th>Descrição</th>
+          <th style="width:130px;">Utilizador</th>
+        </tr></thead>
+        <tbody>
+          ${paginated.map(l => {
+            const isDelete = l.action === 'update' && l.details && l.details.includes('"ativo":false');
+            const actionKey = isDelete ? 'remove' : l.action;
+            const color = actionBadgeColor(actionKey);
+            const aLabel = isDelete ? 'Eliminação' : (ACTION_LABELS[l.action] || l.action);
+            return `<tr>
+              <td><span style="font-size:12px;color:var(--text-muted);">${l.date}</span><br><span style="font-size:11px;color:var(--text-muted);opacity:.7;">${l.time}</span></td>
+              <td>
+                <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;background:${color}22;color:${color};white-space:nowrap;">
+                  <span style="width:12px;height:12px;display:inline-flex;">${actionIcon(actionKey)}</span>${aLabel}
+                </span>
+              </td>
+              <td>
+                ${l.module ? `<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);">
+                  <span style="width:14px;height:14px;display:inline-flex;opacity:.6;">${moduleIcon(l.module)}</span>${l.module_label||l.module}
+                </span>` : '<span style="color:var(--text-muted);font-size:12px;">—</span>'}
+              </td>
+              <td style="font-size:13px;color:var(--text-primary);max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${(l.description||'').replace(/"/g,'&quot;')}">${l.description || '—'}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <div style="width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${(l.user_name||'S').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase()}</div>
+                  <div><div style="font-size:12px;font-weight:500;color:var(--text-primary)">${l.user_name||'Sistema'}</div>${l.user_role?`<div style="font-size:10px;color:var(--text-muted)">${l.user_role}</div>`:''}</div>
+                </div>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <!-- PAGINATION -->
+      <div style="display:flex;justify-content:center;align-items:center;gap:8px;padding:16px;">
+        <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="logsPage=${logsPage-1};renderLogs()" ${logsPage<=1?'disabled':''}>← Anterior</button>
+        ${Array.from({length:Math.min(totalPages,7)},(_,i)=>{
+          let p; if(totalPages<=7){p=i+1;}
+          else if(logsPage<=4){p=i+1;}
+          else if(logsPage>=totalPages-3){p=totalPages-6+i;}
+          else{p=logsPage-3+i;}
+          return `<button class="btn ${p===logsPage?'btn-primary':'btn-secondary'}" style="padding:6px 12px;font-size:12px;min-width:36px;" onclick="logsPage=${p};renderLogs()">${p}</button>`;
+        }).join('')}
+        <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="logsPage=${logsPage+1};renderLogs()" ${logsPage>=totalPages?'disabled':''}>Seguinte →</button>
+      </div>
+      ` : `<div class="table-empty" style="padding:48px;">${ICONS.list}<p style="color:var(--text-muted)">Nenhum registo encontrado com os filtros seleccionados</p></div>`}
+    </div>
+  `;
+  refocus('search-logs');
+}
+
+function exportLogs() {
+  const logs = (db.data.logs || []).slice().reverse();
+  if (!logs.length) { toast('warning','Sem dados','Não há registos para exportar.'); return; }
+  const headers = ['ID','Data','Hora','Acção','Módulo','Descrição','Utilizador','Função','ID Registo'];
+  const rows = logs.map(l => [
+    l.id, l.date, l.time,
+    ACTION_LABELS[l.action]||l.action,
+    TABLE_LABELS[l.module]||l.module||'',
+    (l.description||'').replace(/"/g,'""'),
+    l.user_name||'Sistema',
+    l.user_role||'',
+    l.record_id||''
+  ]);
+  const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url;
+  a.download = `logs_sistema_${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  addLog('export', 'logs', null, { total: logs.length });
+  toast('success','Exportação concluída',`${logs.length} registos exportados para CSV.`);
+}
+
+function clearLogs() {
+  if (currentUser?.funcao !== 'Administrador') { toast('error','Sem permissão','Apenas Administradores podem limpar os logs.'); return; }
+  confirm('Limpar todos os Logs','Esta acção apaga permanentemente todos os registos de actividade. Confirmar?').then(ok => {
+    if (!ok) return;
+    addLog('clear', 'logs', null, { cleared_count: (db.data.logs||[]).length });
+    db.data.logs = db.data.logs.slice(-1); // keep the clear action itself
+    db.save();
+    toast('success','Logs limpos','Todos os registos foram removidos.');
+    renderLogs();
+  });
+}
+
+// ===================== SEARCHABLE COMBOBOX — MOV PRODUTO =====================
+function openMovCombo() {
+  const list = document.getElementById('combo-mov-produto-list');
+  if (list) { list.style.display = 'block'; filterMovCombo(document.getElementById('combo-mov-produto-input').value); }
+}
+function closeMovCombo() {
+  const list = document.getElementById('combo-mov-produto-list');
+  if (list) list.style.display = 'none';
+  // If input text doesn't match selected id, clear selection
+  const input = document.getElementById('combo-mov-produto-input');
+  const hidden = document.getElementById('mov-produto');
+  if (hidden && !hidden.value) { if (input) input.value = ''; }
+}
+function filterMovCombo(query) {
+  const list = document.getElementById('combo-mov-produto-list');
+  if (!list) return;
+  list.style.display = 'block';
+  const q = (query || '').toLowerCase().trim();
+  const options = list.querySelectorAll('.combo-option');
+  let anyVisible = false;
+  options.forEach(opt => {
+    const match = !q || opt.textContent.toLowerCase().includes(q);
+    opt.style.display = match ? 'block' : 'none';
+    if (match) anyVisible = true;
+  });
+  // Show empty message if no results
+  let emptyEl = list.querySelector('.combo-empty');
+  if (!anyVisible) {
+    if (!emptyEl) { emptyEl = document.createElement('div'); emptyEl.className = 'combo-empty'; emptyEl.textContent = 'Nenhum produto encontrado'; list.appendChild(emptyEl); }
+    emptyEl.style.display = 'block';
+  } else if (emptyEl) { emptyEl.style.display = 'none'; }
+}
+function selectMovCombo(id, nome) {
+  document.getElementById('mov-produto').value = id;
+  document.getElementById('combo-mov-produto-input').value = nome;
+  const list = document.getElementById('combo-mov-produto-list');
+  if (list) list.style.display = 'none';
+  updateMovLotes();
 }
