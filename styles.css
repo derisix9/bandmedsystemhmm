@@ -1160,6 +1160,9 @@ body.theme-light table tbody tr:hover { background: rgba(0,137,123,0.04); }
 body.theme-light .modal { background: var(--bg-panel); border-color: var(--border); }
 body.theme-light .modal-header { border-color: var(--border); background: var(--bg-card); }
 body.theme-light .modal-footer { border-color: var(--border); background: var(--bg-card); }
+body.theme-light .combo-dropdown { background: #ffffff; border-color: var(--border); box-shadow: 0 8px 32px rgba(0,0,0,.18); }
+body.theme-light .combo-option { color: var(--text-primary); }
+body.theme-light .combo-option:hover { background: rgba(99,102,241,.08); }
 body.theme-light .sidebar-toggle-btn { background: var(--bg-card); border-color: var(--border); color: var(--text-secondary); }
 body.theme-light .sidebar-toggle-btn:hover { background: var(--accent); color: #fff; }
 body.theme-light .header-btn { background: var(--bg-input); color: var(--text-secondary); border-color: var(--border); }
@@ -1277,35 +1280,68 @@ body.theme-light .stat-label, body.theme-light .stat-sub { color: var(--text-mut
 }
 .combo-dropdown {
   display: none;
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  background: var(--surface);
+  /* Appended to <body> via JS — position:fixed escapes all stacking contexts */
+  position: fixed;
+  background: var(--bg-panel, #1a2744);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0,0,0,.18);
-  z-index: 9999;
-  max-height: 220px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.65);
+  z-index: 999999;
+  max-height: 260px;
   overflow-y: auto;
+  backdrop-filter: none;
+  /* Ensure fully opaque — no transparency */
+  opacity: 1 !important;
 }
 .combo-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 9px 14px;
   font-size: 13px;
   color: var(--text-primary);
   cursor: pointer;
   transition: background .12s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .combo-option:hover {
   background: var(--primary-light, rgba(99,102,241,.12));
   color: var(--primary);
 }
+.combo-opt-nome {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combo-opt-stock {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.combo-stock-ok   { background: rgba(34,197,94,.15);  color: #22c55e; }
+.combo-stock-low  { background: rgba(245,158,11,.15); color: #f59e0b; }
+.combo-stock-zero { background: rgba(239,68,68,.15);  color: #ef4444; }
 .combo-empty {
   padding: 10px 14px;
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
 }
+
+/* ===================== ROLE BADGES ===================== */
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.role-admin   { background: rgba(239,68,68,.15);   color: #ef4444; border: 1px solid rgba(239,68,68,.3); }
+.role-tecnico { background: rgba(99,102,241,.15);  color: #818cf8; border: 1px solid rgba(99,102,241,.3); }
+.role-user    { background: rgba(100,116,139,.15); color: #94a3b8; border: 1px solid rgba(100,116,139,.3); }

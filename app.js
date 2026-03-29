@@ -1356,6 +1356,11 @@ function setupLogin() {
 }
 
 // ===================== APP INIT =====================
+
+// Roles that can access restricted sections
+const RESTRICTED_ROLES = ['Administrador', 'Técnico'];
+function isPrivileged() { return RESTRICTED_ROLES.includes(currentUser?.funcao); }
+
 function initApp() {
   document.getElementById('header-user-name').textContent = currentUser.nome;
   document.getElementById('header-user-role').textContent = currentUser.funcao;
@@ -1364,11 +1369,26 @@ function initApp() {
   document.getElementById('sidebar-user-role').textContent = currentUser.funcao;
   document.getElementById('sidebar-user-avatar').textContent = initials(currentUser.nome);
 
-  // Show/hide admin menu based on role
+  // ── Visibility by role ──────────────────────────────────────────
+  const priv = isPrivileged();
+  const isAdmin = currentUser.funcao === 'Administrador';
+
+  // Base de Dados — Técnico e Administrador
+  const navBD = document.getElementById('nav-basedados');
+  if (navBD) navBD.style.display = priv ? 'flex' : 'none';
+
+  // Utilizadores — apenas Administrador
   const navUsuarios = document.getElementById('nav-usuarios');
-  if (navUsuarios) {
-    navUsuarios.style.display = currentUser.funcao === 'Administrador' ? 'flex' : 'none';
-  }
+  if (navUsuarios) navUsuarios.style.display = isAdmin ? 'flex' : 'none';
+
+  // Logs — Técnico e Administrador
+  const navLogs = document.getElementById('nav-logs');
+  if (navLogs) navLogs.style.display = priv ? 'flex' : 'none';
+
+  // Sincronização — Técnico e Administrador
+  const navSync = document.getElementById('nav-sincronizacao');
+  if (navSync) navSync.style.display = priv ? 'flex' : 'none';
+  // ────────────────────────────────────────────────────────────────
 
   // Apply saved theme
   applyTheme(appSettings.theme || 'dark');
@@ -1425,6 +1445,18 @@ const PAGE_TITLES = {
 };
 
 function navigateTo(page) {
+  // ── Access control ──────────────────────────────────────────────
+  const adminOnly = ['usuarios'];
+  const privOnly  = ['basedados', 'sincronizacao', 'logs'];
+  if (adminOnly.includes(page) && currentUser?.funcao !== 'Administrador') {
+    toast('error', 'Acesso restrito', 'Esta secção é exclusiva do Administrador do sistema.');
+    return;
+  }
+  if (privOnly.includes(page) && !isPrivileged()) {
+    toast('error', 'Acesso restrito', 'Esta secção requer função de Técnico ou Administrador.');
+    return;
+  }
+  // ───────────────────────────────────────────────────────────────
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(item => {
     item.classList.toggle('active', item.dataset.page === page);
@@ -1748,17 +1780,30 @@ function initDashboardCharts(movs, produtos) {
   if (ctx4) {
     const topProd = produtos.map(p => {
       const {stock} = db.getStock(p.id);
-      return { nome: p.nome.length > 22 ? p.nome.substring(0,20)+'…' : p.nome, stock: Math.max(0, stock) };
+      return { nome: p.nome, nomeShort: p.nome.length > 22 ? p.nome.substring(0,20)+'…' : p.nome, stock: Math.max(0, stock) };
     }).sort((a,b)=>b.stock-a.stock).slice(0,5);
+    // Store full names globally so tooltip callback can access them
+    window._topProdNames = topProd.map(p => p.nome);
+    window._topProdStock = topProd.map(p => p.stock);
     chartInstances['chart-top-stock'] = new Chart(ctx4, {
       type:'bar',
       data:{
-        labels: topProd.map(p=>p.nome),
+        labels: topProd.map(p=>p.nomeShort),
         datasets:[{ label:'Stock Actual', data: topProd.map(p=>p.stock), backgroundColor: PALETTE, borderWidth:1, borderRadius:4 }]
       },
       options:{
         indexAxis:'y', responsive:true, maintainAspectRatio:false,
-        plugins:{ legend:{ display:false } },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{
+            callbacks:{
+              title: function(items) { return (window._topProdNames || [])[items[0].dataIndex] || items[0].label; },
+              label: function(item) { return '  Stock: ' + item.raw + ' unidades'; }
+            },
+            bodyFont:{ size:12 }, titleFont:{ size:12, weight:'bold' },
+            padding:10, displayColors:false
+          }
+        },
         scales:{
           x:{ ticks:{ color:'#5A7A9B', font:{size:10} }, grid:{ color:'rgba(30,58,95,0.5)' }, beginAtZero:true },
           y:{ ticks:{ color:'#8BA7C7', font:{size:10} }, grid:{ color:'rgba(30,58,95,0.5)' } }
@@ -1844,7 +1889,7 @@ function renderProdutos() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" id="search-produtos" placeholder="Pesquisar produto..." value="${prodSearch}" oninput="prodSearch=this.value;renderProdutos()">
+            <input class="search-input" id="search-produtos" placeholder="Pesquisar produto..." value="${prodSearch}" oninput="prodSearch=this.value;filterProdutosTable()">
           </div>
         </div>
       </div>
@@ -1854,7 +1899,7 @@ function renderProdutos() {
           <th>Nome</th><th>Forma</th><th>Grupo Farmacológico</th><th>Prateleira</th>
           <th>Stock Mín.</th><th>Preço</th><th>Entradas</th><th>Saídas</th><th>Stock</th><th>Status</th><th>Acções</th>
         </tr></thead>
-        <tbody>
+        <tbody id="tbody-produtos">
           ${produtos.length ? produtos.map(p => {
             const {entradas,saidas,stock} = db.getStock(p.id);
             const prat = prateleiras.find(s=>s.id===p.prateleira_id);
@@ -1897,17 +1942,21 @@ function renderProdutos() {
             </div>
             <div class="field-wrap">
               <label class="field-label">${ICONS.tag} Forma Farmacêutica</label>
-              <select class="field-select" id="prod-forma">
+              <select class="field-select" id="prod-forma" onchange="toggleOutroField('prod-forma','prod-forma-outro')">
                 <option value="">Seleccionar...</option>
                 ${['Comprimido','Cápsula','Xarope','Injectável','Creme','Pomada','Supositório','Solução Oral','Gotas','Spray','Inalador','Sachê','Pó para Solução','Adesivo','Outro'].map(f=>`<option value="${f}">${f}</option>`).join('')}
               </select>
+              <input class="field-input" id="prod-forma-outro" placeholder="Especifique a forma farmacêutica..."
+                style="margin-top:8px;display:none;" oninput="this.value=this.value">
             </div>
             <div class="field-wrap">
               <label class="field-label">${ICONS.layers} Grupo Farmacológico</label>
-              <select class="field-select" id="prod-grupo">
+              <select class="field-select" id="prod-grupo" onchange="toggleOutroField('prod-grupo','prod-grupo-outro')">
                 <option value="">Seleccionar...</option>
                 ${['Analgésico','Antibiótico','Anti-inflamatório','Antifúngico','Antiviral','Antiparasitário','Anti-hipertensivo','Antidiabético','Antiácido','Antihistamínico','Antidepressivo','Ansiolítico','Antiepiléptico','Cardiovascular','Diurético','Laxante','Vitamina/Suplemento','Anestésico','Antialérgico','Outro'].map(g=>`<option value="${g}">${g}</option>`).join('')}
               </select>
+              <input class="field-input" id="prod-grupo-outro" placeholder="Especifique o grupo farmacológico..."
+                style="margin-top:8px;display:none;" oninput="this.value=this.value">
             </div>
             <div class="field-wrap">
               <label class="field-label">${ICONS.shelf} Prateleira</label>
@@ -1941,21 +1990,50 @@ function renderProdutos() {
 function openProdutoModal(id=null) {
   editingId = id;
   document.getElementById('modal-prod-title').textContent = id?'Editar Produto':'Novo Produto';
+
+  // Known forma and grupo options
+  const formas  = ['Comprimido','Cápsula','Xarope','Injectável','Creme','Pomada','Supositório','Solução Oral','Gotas','Spray','Inalador','Sachê','Pó para Solução','Adesivo','Outro',''];
+  const grupos  = ['Analgésico','Antibiótico','Anti-inflamatório','Antifúngico','Antiviral','Antiparasitário','Anti-hipertensivo','Antidiabético','Antiácido','Antihistamínico','Antidepressivo','Ansiolítico','Antiepiléptico','Cardiovascular','Diurético','Laxante','Vitamina/Suplemento','Anestésico','Antialérgico','Outro',''];
+
   if (id) {
     const p = db.getById('produtos',id);
     if (p) {
       document.getElementById('prod-nome').value = p.nome||'';
-      document.getElementById('prod-forma').value = p.forma||'';
-      document.getElementById('prod-grupo').value = p.grupo_farmacologico||'';
       document.getElementById('prod-prateleira').value = p.prateleira_id||'';
       document.getElementById('prod-stock-min').value = p.stock_minimo||'';
       document.getElementById('prod-preco').value = p.preco||'';
+
+      // Forma — if saved value is not in the list, it's a custom "Outro"
+      const formaVal = p.forma||'';
+      if (formaVal && !formas.includes(formaVal)) {
+        document.getElementById('prod-forma').value = 'Outro';
+        document.getElementById('prod-forma-outro').value = formaVal;
+        document.getElementById('prod-forma-outro').style.display = 'block';
+      } else {
+        document.getElementById('prod-forma').value = formaVal;
+        document.getElementById('prod-forma-outro').value = '';
+        document.getElementById('prod-forma-outro').style.display = 'none';
+      }
+
+      // Grupo — same logic
+      const grupoVal = p.grupo_farmacologico||'';
+      if (grupoVal && !grupos.includes(grupoVal)) {
+        document.getElementById('prod-grupo').value = 'Outro';
+        document.getElementById('prod-grupo-outro').value = grupoVal;
+        document.getElementById('prod-grupo-outro').style.display = 'block';
+      } else {
+        document.getElementById('prod-grupo').value = grupoVal;
+        document.getElementById('prod-grupo-outro').value = '';
+        document.getElementById('prod-grupo-outro').style.display = 'none';
+      }
     }
   } else {
-    ['prod-nome','prod-stock-min','prod-preco'].forEach(id=>document.getElementById(id).value='');
+    ['prod-nome','prod-stock-min','prod-preco'].forEach(fid=>{ const el=document.getElementById(fid); if(el) el.value=''; });
     document.getElementById('prod-forma').value='';
     document.getElementById('prod-grupo').value='';
     document.getElementById('prod-prateleira').value='';
+    document.getElementById('prod-forma-outro').value=''; document.getElementById('prod-forma-outro').style.display='none';
+    document.getElementById('prod-grupo-outro').value=''; document.getElementById('prod-grupo-outro').style.display='none';
   }
   document.getElementById('modal-produto').classList.add('open');
 }
@@ -1967,8 +2045,9 @@ async function saveProduto() {
   setLoading(btn,true);
   await new Promise(r=>setTimeout(r,400));
   const data = {
-    nome, forma:document.getElementById('prod-forma').value,
-    grupo_farmacologico:document.getElementById('prod-grupo').value,
+    nome,
+    forma: (()=>{ const s=document.getElementById('prod-forma').value; return s==='Outro'?(document.getElementById('prod-forma-outro').value.trim()||'Outro'):s; })(),
+    grupo_farmacologico: (()=>{ const s=document.getElementById('prod-grupo').value; return s==='Outro'?(document.getElementById('prod-grupo-outro').value.trim()||'Outro'):s; })(),
     prateleira_id:parseInt(document.getElementById('prod-prateleira').value)||null,
     stock_minimo:parseInt(document.getElementById('prod-stock-min').value)||null,
     preco:parseFloat(document.getElementById('prod-preco').value)||null, status:'Ativo',
@@ -2009,14 +2088,14 @@ function renderFornecedores() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" id="search-fornecedores" placeholder="Pesquisar..." value="${fornSearch}" oninput="fornSearch=this.value;renderFornecedores()">
+            <input class="search-input" id="search-fornecedores" placeholder="Pesquisar..." value="${fornSearch}" oninput="fornSearch=this.value;filterFornecedoresTable()">
           </div>
         </div>
       </div>
       <div class="tbl-scroll">
       <table>
         <thead><tr><th>Nome</th><th>Contacto</th><th>Email</th><th>Telefone</th><th>Endereço</th><th>Acções</th></tr></thead>
-        <tbody>
+        <tbody id="tbody-fornecedores">
           ${forns.length ? forns.map(f=>`<tr>
             <td class="td-name">${f.nome}</td>
             <td>${f.contacto||'—'}</td>
@@ -2312,9 +2391,9 @@ function renderLotes() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" id="search-lotes" placeholder="Pesquisar lote..." value="${loteSearch}" oninput="loteSearch=this.value;renderLotes()">
+            <input class="search-input" id="search-lotes" placeholder="Pesquisar lote..." value="${loteSearch}" oninput="loteSearch=this.value;filterLotesTable()">
           </div>
-          <select class="select-filter" onchange="loteFilter=this.value;renderLotes()">
+          <select class="select-filter" onchange="loteFilter=this.value;filterLotesTable()">
             <option value="todos" ${loteFilter==='todos'?'selected':''}>Todos</option>
             <option value="ativos" ${loteFilter==='ativos'?'selected':''}>Activos</option>
             <option value="avencer" ${loteFilter==='avencer'?'selected':''}>A Vencer</option>
@@ -2325,7 +2404,7 @@ function renderLotes() {
       <div class="tbl-scroll">
       <table>
         <thead><tr><th>Nº Lote</th><th>Produto</th><th>Fornecedor</th><th>Quantidade</th><th>Validade</th><th>Dias Rest.</th><th>Código Barras</th><th>Status</th><th>Acções</th></tr></thead>
-        <tbody>
+        <tbody id="tbody-lotes">
           ${lotes.length ? lotes.map(l=>{
             const prod=db.getById('produtos',l.produto_id);
             const forn=db.getById('fornecedores',l.fornecedor_id);
@@ -2520,20 +2599,20 @@ function renderMovimentacoes() {
         <div class="table-actions" style="flex-wrap:wrap;gap:8px;">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" id="search-movimentacoes" placeholder="Pesquisar produto/destino..." value="${movSearch}" oninput="movSearch=this.value;renderMovimentacoes()">
+            <input class="search-input" id="search-movimentacoes" placeholder="Pesquisar produto/destino..." value="${movSearch}" oninput="movSearch=this.value;filterMovimentacoesTable()">
           </div>
-          <select class="select-filter" onchange="movFilter=this.value;renderMovimentacoes()">
+          <select class="select-filter" onchange="movFilter=this.value;filterMovimentacoesTable()">
             <option value="todos" ${movFilter==='todos'?'selected':''}>Todos os tipos</option>
             <option value="Entrada" ${movFilter==='Entrada'?'selected':''}>Entradas</option>
             <option value="Saída" ${movFilter==='Saída'?'selected':''}>Saídas</option>
           </select>
           <div class="date-filter-wrap">
             ${ICONS.calendar}
-            <input type="date" value="${movDateFrom}" onchange="movDateFrom=this.value;renderMovimentacoes()" title="Data de início">
+            <input type="date" value="${movDateFrom}" onchange="movDateFrom=this.value;filterMovimentacoesTable()" title="Data de início">
             <span>—</span>
-            <input type="date" value="${movDateTo}" onchange="movDateTo=this.value;renderMovimentacoes()" title="Data de fim">
+            <input type="date" value="${movDateTo}" onchange="movDateTo=this.value;filterMovimentacoesTable()" title="Data de fim">
           </div>
-          ${(movDateFrom||movDateTo) ? `<button class="btn btn-secondary" onclick="movDateFrom='';movDateTo='';renderMovimentacoes()" style="padding:6px 10px;font-size:11px;">${ICONS.x} Limpar datas</button>` : ''}
+          ${(movDateFrom||movDateTo) ? `<button class="btn btn-secondary" onclick="movDateFrom='';movDateTo='';filterMovimentacoesTable()" style="padding:6px 10px;font-size:11px;">${ICONS.x} Limpar datas</button>` : ''}
         </div>
       </div>
       <div class="tbl-scroll">
@@ -2541,7 +2620,7 @@ function renderMovimentacoes() {
         <thead><tr>
           <th>Produto</th><th>Tipo</th><th>Lote</th><th>Quantidade</th><th>Destino/Origem</th><th>Preço Unit.</th><th>Data</th><th>Acções</th>
         </tr></thead>
-        <tbody>
+        <tbody id="tbody-movimentacoes">
           ${sortedMovs.length ? sortedMovs.map(m=>{
             const prod=db.getById('produtos',m.produto_id);
             const lot=db.getById('lotes',m.lote_id);
@@ -2581,10 +2660,10 @@ function renderMovimentacoes() {
                   placeholder="Escrever ou seleccionar produto..."
                   oninput="filterMovCombo(this.value)"
                   onfocus="openMovCombo()"
-                  onblur="setTimeout(()=>closeMovCombo(),180)">
+                  onblur="setTimeout(()=>closeMovCombo(),220)">
                 <input type="hidden" id="mov-produto">
                 <div class="combo-dropdown" id="combo-mov-produto-list">
-                  ${produtos.map(p=>`<div class="combo-option" data-id="${p.id}" onmousedown="selectMovCombo(${p.id},'${p.nome.replace(/'/g,"\\'")}')"> ${p.nome}</div>`).join('')}
+                  ${produtos.map(p=>{ const {stock}=db.getStock(p.id); return `<div class="combo-option" data-id="${p.id}" data-nome="${p.nome.replace(/"/g,'&quot;')}" onmousedown="selectMovCombo(${p.id},this.dataset.nome)"><span class="combo-opt-nome">${p.nome}</span><span class="combo-opt-stock ${stock<=0?'combo-stock-zero':stock<=(p.stock_minimo||0)?'combo-stock-low':'combo-stock-ok'}">${stock} un.</span></div>`; }).join('')}
                 </div>
               </div>
             </div>
@@ -3256,7 +3335,7 @@ function renderUsuarios() {
               <div class="user-card-name">${u.nome} ${u.id===currentUser.id?'<span style="font-size:10px;color:var(--accent);">(você)</span>':''}</div>
               <div class="user-card-meta">
                 @${u.username}
-                <span class="role-badge ${u.funcao==='Administrador'?'role-admin':'role-user'}" style="margin-left:8px;">${u.funcao}</span>
+                <span class="role-badge ${u.funcao==='Administrador'?'role-admin':u.funcao==='Técnico'?'role-tecnico':'role-user'}" style="margin-left:8px;">${u.funcao}</span>
               </div>
             </div>
             <div class="user-card-actions">
@@ -3292,7 +3371,12 @@ function renderUsuarios() {
                 <option value="Farmacêutico">Farmacêutico</option>
                 <option value="Técnico">Técnico</option>
                 <option value="Enfermeiro">Enfermeiro</option>
-                <option value="Administrador">Administrador</option>
+                ${(() => {
+                  const adminExists = db.getAll('usuarios').find(u => u.funcao === 'Administrador');
+                  // Show Administrator option only if no admin exists yet, or we are editing the current admin
+                  const showAdmin = !adminExists || (adminExists && userEditingId === adminExists.id);
+                  return showAdmin ? '<option value="Administrador">Administrador</option>' : '';
+                })()}
               </select>
             </div>
             <div class="field-wrap" id="user-pwd-wrap">
@@ -3378,6 +3462,17 @@ async function saveUser() {
 
   const btn = document.getElementById('btn-save-user');
   setLoading(btn,true);
+
+  // ── Regra: apenas um Administrador no sistema ───────────────────
+  if (funcao === 'Administrador') {
+    const adminExists = db.getAll('usuarios').find(u => u.funcao === 'Administrador' && u.id !== userEditingId);
+    if (adminExists) {
+      toast('error', 'Administrador já existe', `O sistema só pode ter um Administrador. "${adminExists.nome}" já tem essa função.`);
+      setLoading(btn, false);
+      return;
+    }
+  }
+  // ───────────────────────────────────────────────────────────────
 
   if (userEditingId) {
     // Check username uniqueness
@@ -4353,14 +4448,14 @@ function renderKits() {
         <div class="table-actions">
           <div class="search-wrap">
             <span class="search-icon">${ICONS.search}</span>
-            <input class="search-input" id="search-kits" placeholder="Pesquisar kit..." value="${kitSearch}" oninput="kitSearch=this.value;renderKits()">
+            <input class="search-input" id="search-kits" placeholder="Pesquisar kit..." value="${kitSearch}" oninput="kitSearch=this.value;filterKitsTable()">
           </div>
         </div>
       </div>
       <div class="tbl-scroll">
       <table>
         <thead><tr><th>Nome do Kit</th><th>Componentes</th><th>Descrição</th><th>Saídas Registadas</th><th>Acções</th></tr></thead>
-        <tbody>
+        <tbody id="tbody-kits">
           ${filtered.length ? filtered.map(k=>{
             const comps = Array.isArray(k.componentes) ? k.componentes : [];
             const saidas = db.getAll('movimentacoes').filter(m=>m.kit_id===k.id&&m.tipo==='Saída').length;
@@ -4701,7 +4796,7 @@ function renderLogs() {
       </div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <button class="btn btn-secondary" onclick="exportLogs()">${ICONS.download} Exportar CSV</button>
-        ${currentUser?.funcao === 'Administrador' ? `<button class="btn btn-secondary" style="color:var(--danger);border-color:var(--danger);" onclick="clearLogs()">${ICONS.trash} Limpar Logs</button>` : ''}
+        ${isPrivileged() ? `<button class="btn btn-secondary" style="color:var(--danger);border-color:var(--danger);" onclick="clearLogs()">${ICONS.trash} Limpar Logs</button>` : ''}
         <button class="btn btn-secondary" onclick="renderLogs()">${ICONS.refresh} Actualizar</button>
       </div>
     </div>
@@ -4733,7 +4828,7 @@ function renderLogs() {
           <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Pesquisar</div>
           <div style="position:relative;">
             <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-muted);width:16px;height:16px;display:inline-flex;">${ICONS.search}</span>
-            <input class="field-input" id="search-logs" style="padding-left:34px;" placeholder="Descrição ou utilizador…" value="${logsFilter.search}" oninput="logsFilter.search=this.value;logsPage=1;renderLogs()">
+            <input class="field-input" id="search-logs" style="padding-left:34px;" placeholder="Descrição ou utilizador…" value="${logsFilter.search}" oninput="logsFilter.search=this.value;logsPage=1;filterLogsTable()">
           </div>
         </div>
         <div style="min-width:150px;">
@@ -4762,7 +4857,7 @@ function renderLogs() {
     <div class="table-wrap">
       <div class="table-header">
         <div class="table-title">${ICONS.activity} Registos <span class="chip">${filtered.length}</span></div>
-        <div style="font-size:13px;color:var(--text-muted);">Página ${logsPage} de ${totalPages} &nbsp;·&nbsp; A mostrar ${paginated.length} de ${total}</div>
+        <div class="logs-page-info" style="font-size:13px;color:var(--text-muted);">Página ${logsPage} de ${totalPages} &nbsp;·&nbsp; A mostrar ${paginated.length} de ${total}</div>
       </div>
       ${paginated.length ? `
       <table class="data-table">
@@ -4803,7 +4898,7 @@ function renderLogs() {
         </tbody>
       </table>
       <!-- PAGINATION -->
-      <div style="display:flex;justify-content:center;align-items:center;gap:8px;padding:16px;">
+      <div class="logs-pagination" style="display:flex;justify-content:center;align-items:center;gap:8px;padding:16px;">
         <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="logsPage=${logsPage-1};renderLogs()" ${logsPage<=1?'disabled':''}>← Anterior</button>
         ${Array.from({length:Math.min(totalPages,7)},(_,i)=>{
           let p; if(totalPages<=7){p=i+1;}
@@ -4818,6 +4913,8 @@ function renderLogs() {
     </div>
   `;
   refocus('search-logs');
+  const _lp = document.getElementById('page-logs');
+  if (_lp) _lp.dataset.shellReady = '1';
 }
 
 function exportLogs() {
@@ -4845,7 +4942,7 @@ function exportLogs() {
 }
 
 function clearLogs() {
-  if (currentUser?.funcao !== 'Administrador') { toast('error','Sem permissão','Apenas Administradores podem limpar os logs.'); return; }
+  if (!isPrivileged()) { toast('error','Sem permissão','Apenas Técnicos e Administradores podem limpar os logs.'); return; }
   confirm('Limpar todos os Logs','Esta acção apaga permanentemente todos os registos de actividade. Confirmar?').then(ok => {
     if (!ok) return;
     addLog('clear', 'logs', null, { cleared_count: (db.data.logs||[]).length });
@@ -4858,40 +4955,366 @@ function clearLogs() {
 
 // ===================== SEARCHABLE COMBOBOX — MOV PRODUTO =====================
 function openMovCombo() {
-  const list = document.getElementById('combo-mov-produto-list');
-  if (list) { list.style.display = 'block'; filterMovCombo(document.getElementById('combo-mov-produto-input').value); }
+  const input = document.getElementById('combo-mov-produto-input');
+  let list = document.getElementById('combo-mov-produto-list');
+  if (!input || !list) return;
+
+  // Move the dropdown to <body> the first time so it escapes modal's stacking context
+  if (list.parentElement !== document.body) {
+    document.body.appendChild(list);
+  }
+
+  // Position it precisely below the input using fixed coords
+  const rect = input.getBoundingClientRect();
+  list.style.top   = (rect.bottom + 2) + 'px';
+  list.style.left  = rect.left + 'px';
+  list.style.width = rect.width + 'px';
+  list.style.display = 'block';
+  filterMovCombo(input.value);
+
+  // Reposition on scroll/resize
+  list._repositionFn = () => {
+    const r = input.getBoundingClientRect();
+    list.style.top  = (r.bottom + 2) + 'px';
+    list.style.left = r.left + 'px';
+  };
+  window.addEventListener('scroll', list._repositionFn, true);
 }
+
 function closeMovCombo() {
   const list = document.getElementById('combo-mov-produto-list');
-  if (list) list.style.display = 'none';
-  // If input text doesn't match selected id, clear selection
-  const input = document.getElementById('combo-mov-produto-input');
-  const hidden = document.getElementById('mov-produto');
-  if (hidden && !hidden.value) { if (input) input.value = ''; }
+  if (!list) return;
+  list.style.display = 'none';
+  if (list._repositionFn) {
+    window.removeEventListener('scroll', list._repositionFn, true);
+    list._repositionFn = null;
+  }
 }
+
 function filterMovCombo(query) {
   const list = document.getElementById('combo-mov-produto-list');
   if (!list) return;
   list.style.display = 'block';
   const q = (query || '').toLowerCase().trim();
-  const options = list.querySelectorAll('.combo-option');
   let anyVisible = false;
-  options.forEach(opt => {
-    const match = !q || opt.textContent.toLowerCase().includes(q);
-    opt.style.display = match ? 'block' : 'none';
+  list.querySelectorAll('.combo-option').forEach(opt => {
+    const nome = (opt.dataset.nome || '').toLowerCase();
+    const match = !q || nome.includes(q);
+    opt.style.display = match ? 'flex' : 'none';
     if (match) anyVisible = true;
   });
-  // Show empty message if no results
   let emptyEl = list.querySelector('.combo-empty');
   if (!anyVisible) {
-    if (!emptyEl) { emptyEl = document.createElement('div'); emptyEl.className = 'combo-empty'; emptyEl.textContent = 'Nenhum produto encontrado'; list.appendChild(emptyEl); }
+    if (!emptyEl) {
+      emptyEl = document.createElement('div');
+      emptyEl.className = 'combo-empty';
+      emptyEl.textContent = 'Nenhum produto encontrado';
+      list.appendChild(emptyEl);
+    }
     emptyEl.style.display = 'block';
-  } else if (emptyEl) { emptyEl.style.display = 'none'; }
+  } else if (emptyEl) {
+    emptyEl.style.display = 'none';
+  }
 }
+
 function selectMovCombo(id, nome) {
   document.getElementById('mov-produto').value = id;
   document.getElementById('combo-mov-produto-input').value = nome;
-  const list = document.getElementById('combo-mov-produto-list');
-  if (list) list.style.display = 'none';
+  closeMovCombo();
   updateMovLotes();
+}
+
+// ===================== TABLE-ONLY FILTER FUNCTIONS (no full re-render) =====================
+
+function filterProdutosTable() {
+  // Update only the tbody — the search input stays focused
+  const tbody = document.getElementById('tbody-produtos');
+  const counter = document.querySelector('#page-produtos .table-title .chip');
+  if (!tbody) { renderProdutos(); return; }
+
+  const prateleiras = db.getAll('prateleiras');
+  let produtos = db.getAll('produtos');
+  if (prodSearch) produtos = produtos.filter(p =>
+    p.nome.toLowerCase().includes(prodSearch.toLowerCase()) ||
+    (p.grupo_farmacologico||'').toLowerCase().includes(prodSearch.toLowerCase())
+  );
+  produtos.sort((a, b) => (a.nome||'').localeCompare(b.nome||'', 'pt', {sensitivity:'base'}));
+
+  if (counter) counter.textContent = produtos.length;
+
+  tbody.innerHTML = produtos.length ? produtos.map(p => {
+    const {entradas, saidas, stock} = db.getStock(p.id);
+    const prat = prateleiras.find(s => s.id === p.prateleira_id);
+    const belowMin = p.stock_minimo && stock <= p.stock_minimo;
+    return `<tr>
+      <td class="td-name">${p.nome}</td>
+      <td>${p.forma||'—'}</td>
+      <td>${p.grupo_farmacologico||'—'}</td>
+      <td>${prat ? prat.nome : '—'}</td>
+      <td>${p.stock_minimo||'—'}</td>
+      <td>${p.preco ? formatMoney(p.preco) : '—'}</td>
+      <td class="text-accent font-bold">${entradas}</td>
+      <td class="text-danger font-bold">${saidas}</td>
+      <td class="font-bold ${belowMin?'text-danger':'text-info'}">${stock}</td>
+      <td><span class="badge ${belowMin?'badge-danger':'badge-success'}">${belowMin?'Stock Baixo':p.status||'Ativo'}</span></td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-secondary btn-icon" title="Editar" onclick="openProdutoModal(${p.id})">${ICONS.edit}</button>
+          <button class="btn btn-danger btn-icon" title="Eliminar" onclick="deleteProduto(${p.id})">${ICONS.trash}</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="11"><div class="table-empty">${ICONS.pill}<p>Nenhum produto encontrado para "<strong>${prodSearch}</strong>"</p></div></td></tr>`;
+
+  // Restore focus at end of text
+  const inp = document.getElementById('search-produtos');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+function filterLotesTable() {
+  // Update only the tbody — the search input stays focused
+  const tbody = document.getElementById('tbody-lotes');
+  const counter = document.querySelector('#page-lotes .table-title .chip');
+  if (!tbody) { renderLotes(); return; }
+
+  let lotes = db.getAll('lotes');
+  if (loteSearch) lotes = lotes.filter(l =>
+    l.numero_lote.toLowerCase().includes(loteSearch.toLowerCase()) ||
+    (db.getById('produtos', l.produto_id)?.nome||'').toLowerCase().includes(loteSearch.toLowerCase())
+  );
+  if (loteFilter === 'ativos')   lotes = lotes.filter(l => daysUntil(l.validade) >= 0);
+  if (loteFilter === 'avencer')  lotes = lotes.filter(l => { const d = daysUntil(l.validade); return d >= 0 && d <= 90; });
+  if (loteFilter === 'vencidos') lotes = lotes.filter(l => daysUntil(l.validade) < 0);
+  lotes.sort((a, b) => {
+    const nA = (db.getById('produtos', a.produto_id)?.nome || '').toLowerCase();
+    const nB = (db.getById('produtos', b.produto_id)?.nome || '').toLowerCase();
+    return nA.localeCompare(nB, 'pt', {sensitivity:'base'});
+  });
+
+  if (counter) counter.textContent = lotes.length;
+
+  tbody.innerHTML = lotes.length ? lotes.map(l => {
+    const prod = db.getById('produtos', l.produto_id);
+    const forn = db.getById('fornecedores', l.fornecedor_id);
+    const st   = getLotStatus(l.validade);
+    const dias = daysUntil(l.validade);
+    return `<tr>
+      <td class="font-mono text-accent">${l.numero_lote}</td>
+      <td class="td-name">${prod ? prod.nome : '—'}</td>
+      <td>${forn ? forn.nome : '—'}</td>
+      <td class="font-bold">${l.quantidade||0}</td>
+      <td>${formatDate(l.validade)}</td>
+      <td class="${dias<0?'text-danger':dias<=90?'text-warning':'text-accent'}">${dias<0?`Há ${Math.abs(dias)}d`:dias===Infinity?'—':`${dias}d`}</td>
+      <td class="font-mono text-muted">${l.codigo_barra||'—'}</td>
+      <td><span class="badge ${st.cls}">${st.label}</span></td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-secondary btn-icon" onclick="openLoteModal(${l.id})">${ICONS.edit}</button>
+          <button class="btn btn-danger btn-icon" onclick="deleteLote(${l.id})">${ICONS.trash}</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="9"><div class="table-empty">${ICONS.lot}<p>Nenhum lote encontrado${loteSearch?' para "<strong>'+loteSearch+'</strong>"':''}</p></div></td></tr>`;
+
+  // Restore focus at end of text
+  const inp = document.getElementById('search-lotes');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+// ===================== TABLE-ONLY FILTER: FORNECEDORES =====================
+function filterFornecedoresTable() {
+  const tbody = document.getElementById('tbody-fornecedores');
+  const counter = document.querySelector('#page-fornecedores .table-title .chip');
+  if (!tbody) { renderFornecedores(); return; }
+
+  let forns = db.getAll('fornecedores');
+  if (fornSearch) forns = forns.filter(f =>
+    f.nome.toLowerCase().includes(fornSearch.toLowerCase()) ||
+    (f.contacto||'').toLowerCase().includes(fornSearch.toLowerCase()) ||
+    (f.email||'').toLowerCase().includes(fornSearch.toLowerCase())
+  );
+
+  if (counter) counter.textContent = forns.length;
+  tbody.innerHTML = forns.length ? forns.map(f => `<tr>
+    <td class="td-name">${f.nome}</td>
+    <td>${f.contacto||'—'}</td>
+    <td>${f.email||'—'}</td>
+    <td>${f.telefone||'—'}</td>
+    <td>${f.endereco||'—'}</td>
+    <td>
+      <div style="display:flex;gap:5px;">
+        <button class="btn btn-secondary btn-icon" onclick="openFornecedorModal(${f.id})">${ICONS.edit}</button>
+        <button class="btn btn-danger btn-icon" onclick="deleteFornecedor(${f.id})">${ICONS.trash}</button>
+      </div>
+    </td>
+  </tr>`).join('')
+  : `<tr><td colspan="6"><div class="table-empty">${ICONS.supplier}<p>Nenhum fornecedor encontrado${fornSearch?' para "<strong>'+fornSearch+'</strong>"':''}</p></div></td></tr>`;
+
+  const inp = document.getElementById('search-fornecedores');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+// ===================== TABLE-ONLY FILTER: MOVIMENTAÇÕES =====================
+function filterMovimentacoesTable() {
+  const tbody = document.getElementById('tbody-movimentacoes');
+  const counter = document.querySelector('#page-movimentacoes .table-title .chip');
+  if (!tbody) { renderMovimentacoes(); return; }
+
+  let movs = db.getAll('movimentacoes');
+  if (movSearch) movs = movs.filter(m =>
+    (db.getById('produtos', m.produto_id)?.nome||'').toLowerCase().includes(movSearch.toLowerCase()) ||
+    (m.destino||'').toLowerCase().includes(movSearch.toLowerCase())
+  );
+  if (movFilter !== 'todos') movs = movs.filter(m => m.tipo === movFilter);
+  if (movDateFrom) movs = movs.filter(m => m.data >= movDateFrom);
+  if (movDateTo)   movs = movs.filter(m => m.data <= movDateTo);
+  const sortedMovs = [...movs].sort((a,b) => new Date(b.data) - new Date(a.data));
+
+  if (counter) counter.textContent = sortedMovs.length;
+  tbody.innerHTML = sortedMovs.length ? sortedMovs.map(m => {
+    const prod = db.getById('produtos', m.produto_id);
+    const lot  = db.getById('lotes', m.lote_id);
+    return `<tr>
+      <td class="td-name">${prod ? prod.nome : '—'}</td>
+      <td><span class="badge ${m.tipo==='Entrada'?'badge-success':'badge-danger'}">${m.tipo==='Entrada'?ICONS.arrow_up:ICONS.arrow_down} ${m.tipo}</span></td>
+      <td class="font-mono text-muted">${lot ? lot.numero_lote : '—'}</td>
+      <td class="font-bold ${m.tipo==='Entrada'?'text-accent':'text-danger'}">${m.quantidade}</td>
+      <td>${m.destino||'—'}</td>
+      <td>${m.preco ? formatMoney(m.preco) : '—'}</td>
+      <td>${formatDate(m.data)}</td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-secondary btn-icon" onclick="openMovModal(${m.id})">${ICONS.edit}</button>
+          <button class="btn btn-danger btn-icon" onclick="deleteMov(${m.id})">${ICONS.trash}</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('')
+  : `<tr><td colspan="8"><div class="table-empty">${ICONS.movement}<p>Nenhuma movimentação encontrada</p></div></td></tr>`;
+
+  const inp = document.getElementById('search-movimentacoes');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+// ===================== TABLE-ONLY FILTER: KITS =====================
+function filterKitsTable() {
+  const tbody = document.getElementById('tbody-kits');
+  const counter = document.querySelector('#page-kits .table-title .chip');
+  if (!tbody) { renderKits(); return; }
+
+  const kits = db.getAll('kits');
+  const filtered = kitSearch ? kits.filter(k => k.nome.toLowerCase().includes(kitSearch.toLowerCase())) : kits;
+
+  if (counter) counter.textContent = filtered.length;
+  tbody.innerHTML = filtered.length ? filtered.map(k => {
+    const comps = Array.isArray(k.componentes) ? k.componentes : [];
+    const saidas = db.getAll('movimentacoes').filter(m => m.kit_id === k.id && m.tipo === 'Saída').length;
+    return `<tr>
+      <td class="td-name">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div style="width:30px;height:30px;border-radius:8px;background:rgba(155,89,182,0.2);display:flex;align-items:center;justify-content:center;color:#9B59B6;flex-shrink:0;">${ICONS.layers}</div>
+          ${k.nome}
+        </div>
+      </td>
+      <td>${comps.map(comp => { const p = db.getById('produtos', comp.produto_id); return `<span class="chip" style="margin:2px;">${p?p.nome:'?'} (${comp.quantidade})</span>`; }).join('')}</td>
+      <td style="color:var(--text-muted);font-size:12px;">${k.descricao||'—'}</td>
+      <td class="font-bold text-danger">${saidas}</td>
+      <td>
+        <div style="display:flex;gap:5px;">
+          <button class="btn btn-primary btn-icon" title="Registar Saída de Kit" onclick="openKitSaidaModal(${k.id})">${ICONS.arrow_down}</button>
+          <button class="btn btn-secondary btn-icon" onclick="openKitModal(${k.id})">${ICONS.edit}</button>
+          <button class="btn btn-danger btn-icon" onclick="deleteKit(${k.id})">${ICONS.trash}</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('')
+  : `<tr><td colspan="5"><div class="table-empty">${ICONS.layers}<p>Nenhum kit encontrado${kitSearch?' para "<strong>'+kitSearch+'</strong>"':''}</p></div></td></tr>`;
+
+  const inp = document.getElementById('search-kits');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+// ===================== TABLE-ONLY FILTER: LOGS =====================
+function filterLogsTable() {
+  const page = document.getElementById('page-logs');
+  // Logs uses pagination — if shell not ready, do full render
+  if (!page || !page.dataset.shellReady) { renderLogs(); return; }
+
+  const allLogs = (db.data.logs || []).slice().reverse();
+  let filtered = allLogs.filter(l => {
+    const matchAction = !logsFilter.action || l.action === logsFilter.action;
+    const matchModule = !logsFilter.module || l.module === logsFilter.module;
+    const matchDate   = !logsFilter.date   || l.date === logsFilter.date;
+    const matchSearch = !logsFilter.search ||
+      (l.description||'').toLowerCase().includes(logsFilter.search.toLowerCase()) ||
+      (l.user_name||'').toLowerCase().includes(logsFilter.search.toLowerCase());
+    return matchAction && matchModule && matchDate && matchSearch;
+  });
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / LOGS_PER_PAGE));
+  if (logsPage > totalPages) logsPage = totalPages;
+  const start = (logsPage - 1) * LOGS_PER_PAGE;
+  const paginated = filtered.slice(start, start + LOGS_PER_PAGE);
+
+  const actionBadgeColor = a => ({insert:'#22c55e',update:'#3b82f6',remove:'#ef4444',login:'#8b5cf6',logout:'#f59e0b',view:'#6b7280',export:'#06b6d4',clear:'#f97316'}[a]||'#6b7280');
+  const actionIcon = a => ({insert:ICONS.plus,update:ICONS.edit,remove:ICONS.trash,login:ICONS.lock,logout:ICONS.logout,export:ICONS.download,clear:ICONS.trash,view:ICONS.eye}[a]||ICONS.info);
+  const moduleIcon = m => ({produtos:ICONS.pill,fornecedores:ICONS.supplier,prateleiras:ICONS.shelf,lotes:ICONS.lot,movimentacoes:ICONS.movement,kits:ICONS.layers,usuarios:ICONS.users}[m]||ICONS.database);
+
+  // Update counter chip
+  const chip = page.querySelector('.table-title .chip');
+  if (chip) chip.textContent = filtered.length;
+
+  // Update pagination info
+  const pageInfo = page.querySelector('.logs-page-info');
+  if (pageInfo) pageInfo.textContent = `Página ${logsPage} de ${totalPages} · A mostrar ${paginated.length} de ${total}`;
+
+  // Update table
+  const tbody = page.querySelector('.data-table tbody');
+  if (tbody) {
+    tbody.innerHTML = paginated.length ? paginated.map(l => {
+      const isDelete = l.action === 'update' && l.details && l.details.includes('"ativo":false');
+      const actionKey = isDelete ? 'remove' : l.action;
+      const color = actionBadgeColor(actionKey);
+      const aLabel = isDelete ? 'Eliminação' : (ACTION_LABELS[l.action]||l.action);
+      return `<tr>
+        <td><span style="font-size:12px;color:var(--text-muted);">${l.date}</span><br><span style="font-size:11px;color:var(--text-muted);opacity:.7;">${l.time}</span></td>
+        <td><span style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;background:${color}22;color:${color};white-space:nowrap;"><span style="width:12px;height:12px;display:inline-flex;">${actionIcon(actionKey)}</span>${aLabel}</span></td>
+        <td>${l.module?`<span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);"><span style="width:14px;height:14px;display:inline-flex;opacity:.6;">${moduleIcon(l.module)}</span>${l.module_label||l.module}</span>`:'<span style="color:var(--text-muted);font-size:12px;">—</span>'}</td>
+        <td style="font-size:13px;color:var(--text-primary);max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${(l.description||'').replace(/"/g,'&quot;')}">${l.description||'—'}</td>
+        <td>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;">${(l.user_name||'S').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase()}</div>
+            <div><div style="font-size:12px;font-weight:500;color:var(--text-primary)">${l.user_name||'Sistema'}</div>${l.user_role?`<div style="font-size:10px;color:var(--text-muted)">${l.user_role}</div>`:''}</div>
+          </div>
+        </td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-muted);">Nenhum registo encontrado</td></tr>`;
+  }
+
+  // Update pagination buttons
+  const pag = page.querySelector('.logs-pagination');
+  if (pag) {
+    pag.innerHTML = `
+      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="logsPage=${logsPage-1};filterLogsTable()" ${logsPage<=1?'disabled':''}>← Anterior</button>
+      ${Array.from({length:Math.min(totalPages,7)},(_,i)=>{let p=totalPages<=7?i+1:logsPage<=4?i+1:logsPage>=totalPages-3?totalPages-6+i:logsPage-3+i;return`<button class="btn ${p===logsPage?'btn-primary':'btn-secondary'}" style="padding:6px 12px;font-size:12px;min-width:36px;" onclick="logsPage=${p};filterLogsTable()">${p}</button>`;}).join('')}
+      <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="logsPage=${logsPage+1};filterLogsTable()" ${logsPage>=totalPages?'disabled':''}>Seguinte →</button>`;
+  }
+
+  const inp = document.getElementById('search-logs');
+  if (inp) { const l = inp.value.length; inp.setSelectionRange(l, l); }
+}
+
+// ===================== OUTRO FIELD TOGGLE =====================
+function toggleOutroField(selectId, inputId) {
+  const sel = document.getElementById(selectId);
+  const inp = document.getElementById(inputId);
+  if (!sel || !inp) return;
+  if (sel.value === 'Outro') {
+    inp.style.display = 'block';
+    inp.focus();
+  } else {
+    inp.style.display = 'none';
+    inp.value = '';
+  }
 }
