@@ -1050,6 +1050,10 @@ const ICONS = {
   filter:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>`,
   box:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>`,
   money:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>`,
+  money_in:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M12 10v4m0 0-2-2m2 2 2-2"/><path d="M6 9h2M16 9h2"/></svg>`,
+  money_out:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M12 14v-4m0 0-2 2m2-2 2 2"/><path d="M6 15h2M16 15h2"/></svg>`,
+  profit:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>`,
+  kit_box:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/><line x1="8" y1="10" x2="16" y2="10"/></svg>`,
   activity:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
   pie_chart:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>`,
   bar_chart:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>`,
@@ -1349,13 +1353,17 @@ const SYNC_TABLES = ['produtos','fornecedores','prateleiras','lotes','movimentac
  */
 function mergeRecords(localArr, cloudArr) {
   const stats = { inserted: 0, updated: 0, skipped: 0 };
+  // Filtrar registos inválidos (sem id ou id nulo) antes do merge
+  const safeCloud = (cloudArr || []).filter(r => r != null && r.id != null && r.id !== '');
+  const safeLocal = (localArr  || []).filter(r => r != null && r.id != null && r.id !== '');
+
   // Indexar nuvem por id
   const cloudMap = new Map();
-  (cloudArr || []).forEach(r => cloudMap.set(String(r.id), r));
+  safeCloud.forEach(r => cloudMap.set(String(r.id), r));
 
   // Indexar local por id
   const localMap = new Map();
-  (localArr || []).forEach(r => localMap.set(String(r.id), r));
+  safeLocal.forEach(r => localMap.set(String(r.id), r));
 
   // Começar com cópia da nuvem (base)
   const result = new Map(cloudMap);
@@ -1412,8 +1420,10 @@ function mergeCloudIntoLocal(cloudData) {
 function buildMergedCloudPayload(cloudData) {
   const result = JSON.parse(JSON.stringify(DEFAULT_DB));
   SYNC_TABLES.forEach(table => {
-    const cloudArr = (cloudData && Array.isArray(cloudData[table])) ? cloudData[table] : [];
-    const localArr = db.data[table] || [];
+    let cloudArr = (cloudData && Array.isArray(cloudData[table])) ? cloudData[table] : [];
+    // Filtrar nulos e registos sem id (Firebase arrays esparsos)
+    cloudArr = cloudArr.filter(r => r != null && r.id != null && r.id !== '');
+    const localArr = (db.data[table] || []).filter(r => r != null && r.id != null && r.id !== '');
     const { merged } = mergeRecords(localArr, cloudArr);
     result[table] = merged;
   });
@@ -1428,7 +1438,23 @@ async function syncLocalToCloud() {
     toast('info', '☁️ A sincronizar com a nuvem...', 'A ler dados actuais da nuvem...');
 
     // 1. Ler dados actuais da nuvem (para não os perder)
-    const cloudData = await CloudDB.loadAll();
+    let cloudData = null;
+    try { cloudData = await CloudDB.loadAll(); } catch(e) { console.warn('[Sync] loadAll falhou:', e); }
+
+    // Garantir que cloudData tem estrutura válida mesmo se nuvem está vazia
+    if (!cloudData || typeof cloudData !== 'object') cloudData = {};
+    SYNC_TABLES.forEach(t => {
+      if (!Array.isArray(cloudData[t])) cloudData[t] = [];
+      // Filtrar nulos que o Firebase pode guardar em arrays esparsos
+      cloudData[t] = cloudData[t].filter(r => r != null && r.id != null && r.id !== '');
+    });
+
+    // Igualmente limpar dados locais de registos inválidos antes do merge
+    SYNC_TABLES.forEach(t => {
+      if (Array.isArray(db.data[t])) {
+        db.data[t] = db.data[t].filter(r => r != null && r.id != null && r.id !== '');
+      }
+    });
 
     // 2. Fazer merge: local + nuvem → payload final
     const mergedPayload = buildMergedCloudPayload(cloudData);
@@ -1436,20 +1462,20 @@ async function syncLocalToCloud() {
     // 3. Contar estatísticas para feedback
     let totalInserted = 0, totalUpdated = 0;
     SYNC_TABLES.forEach(table => {
-      const cloudArr = (cloudData && Array.isArray(cloudData[table])) ? cloudData[table] : [];
+      const cloudArr = cloudData[table] || [];
       const localArr = db.data[table] || [];
       const { stats } = mergeRecords(localArr, cloudArr);
       totalInserted += stats.inserted;
       totalUpdated  += stats.updated;
     });
 
-    // 4. Guardar na nuvem (PUT com dados mesclados — NÃO sobrescreve com dados brutos locais)
+    // 4. Guardar na nuvem (PUT com dados mesclados)
     await CloudDB.saveAll(mergedPayload);
 
     // 5. Actualizar dados locais com o estado mesclado (para ficar em sincronia)
     const localUsers = db.data.usuarios;
     db.data = { ...JSON.parse(JSON.stringify(DEFAULT_DB)), ...mergedPayload };
-    // Preservar utilizadores locais se mais recentes
+    // Preservar utilizadores locais se não há na nuvem
     if (localUsers.length && !mergedPayload.usuarios.length) db.data.usuarios = localUsers;
 
     // 6. Cache local
@@ -1462,7 +1488,8 @@ async function syncLocalToCloud() {
       `Adicionados: ${totalInserted} | Actualizados: ${totalUpdated} | Sem conflito: OK`);
     if (currentPage && typeof navigateTo === 'function') navigateTo(currentPage);
   } catch(e) {
-    toast('error', 'Sincronização falhou', 'Verifique a ligação e tente novamente. ' + e.message);
+    console.error('[Sync] syncLocalToCloud erro:', e);
+    toast('error', 'Sincronização falhou', 'Verifique a ligação e tente novamente. ' + (e.message || String(e)));
   }
 }
 
@@ -1472,8 +1499,15 @@ async function syncCloudToLocal() {
   if (!cfg) return;
   try {
     toast('info', '☁️ A carregar dados da nuvem...', 'A fazer merge inteligente...');
-    const cloudData = await CloudDB.loadAll();
+    let cloudData = await CloudDB.loadAll();
     if (cloudData) {
+      // Sanitizar dados da nuvem antes do merge (Firebase pode retornar null em arrays esparsos)
+      if (typeof cloudData === 'object') {
+        SYNC_TABLES.forEach(t => {
+          if (!Array.isArray(cloudData[t])) cloudData[t] = cloudData[t] ? Object.values(cloudData[t]).filter(r => r != null) : [];
+          cloudData[t] = cloudData[t].filter(r => r != null && r.id != null && r.id !== '');
+        });
+      }
       // Merge: nuvem vence apenas onde for mais recente que local
       const stats = mergeCloudIntoLocal(cloudData);
       try { localStorage.setItem(DB_KEY, JSON.stringify(db.data)); } catch(e) {
@@ -1573,20 +1607,33 @@ const CloudDB = {
   async loadAll() {
     const cfg = this.cfg;
     try {
+      let raw = null;
       if (cfg.type === 'firebase') {
         const r = await fetch(this._url('bandmed_data'));
         if (!r.ok) return null;
-        return await r.json();
-      }
-      if (cfg.type === 'supabase') {
+        raw = await r.json();
+      } else if (cfg.type === 'supabase') {
         const r = await fetch(this._url('bandmed_store?store_key=eq.data'), { headers: this._head() });
         if (!r.ok) return null;
         const rows = await r.json();
-        return (Array.isArray(rows) && rows.length) ? rows[0].store_value : null;
+        raw = (Array.isArray(rows) && rows.length) ? rows[0].store_value : null;
+      } else {
+        const r = await fetch(this._url('bandmed_data'), { headers: this._head() });
+        if (!r.ok) return null;
+        raw = await r.json();
       }
-      const r = await fetch(this._url('bandmed_data'), { headers: this._head() });
-      if (!r.ok) return null;
-      return await r.json();
+      // Normalizar: Firebase guarda arrays como objectos {0:{...},1:{...}}
+      // Converter qualquer tabela que seja objecto (não-array) em array
+      if (raw && typeof raw === 'object') {
+        const TABLES = ['produtos','fornecedores','prateleiras','lotes','movimentacoes','kits','usuarios','logs'];
+        TABLES.forEach(t => {
+          if (raw[t] != null && !Array.isArray(raw[t]) && typeof raw[t] === 'object') {
+            raw[t] = Object.values(raw[t]).filter(r => r != null);
+          }
+          if (!Array.isArray(raw[t])) raw[t] = [];
+        });
+      }
+      return raw;
     } catch { return null; }
   },
 
@@ -2308,7 +2355,8 @@ function daysUntil(dateStr) {
   if (!dateStr) return Infinity;
   return Math.floor((new Date(dateStr) - new Date()) / 86400000);
 }
-function getLotStatus(validade) {
+function getLotStatus(validade, bloqueado) {
+  if (bloqueado) return { label:'Bloqueado', cls:'badge-secondary' };
   const d = daysUntil(validade);
   if (d < 0) return { label:'Vencido', cls:'badge-danger' };
   if (d <= 90) return { label:'A Vencer', cls:'badge-warning' };
@@ -2664,6 +2712,7 @@ function updateAlertBadge() {
 function getAlerts() {
   const alerts = [];
   db.getAll('lotes').forEach(lot => {
+    if (lot.bloqueado) return; // Lotes bloqueados não geram alertas de validade
     const d = daysUntil(lot.validade);
     const prod = db.getById('produtos', lot.produto_id);
     const name = prod ? prod.nome : `Produto #${lot.produto_id}`;
@@ -2706,6 +2755,12 @@ function renderDashboard() {
 
   const totalEntradas = movs.filter(m=>(m.tipo||'').toUpperCase()==='ENTRADA').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
   const totalSaidas = movs.filter(m=>(m.tipo||'').toUpperCase()==='SAÍDA').reduce((s,m)=>s+(Number(m.quantidade)||0),0);
+  // Financial totals
+  const totalGastoEntradas = movs.filter(m=>(m.tipo||'').toUpperCase()==='ENTRADA'&&Number(m.preco)>0).reduce((s,m)=>s+(Number(m.preco)||0)*(Number(m.quantidade)||0),0);
+  const totalGastoSaidas = movs.filter(m=>(m.tipo||'').toUpperCase()==='SAÍDA'&&Number(m.preco)>0).reduce((s,m)=>s+(Number(m.preco)||0)*(Number(m.quantidade)||0),0);
+  const lucroGanho = totalGastoSaidas - totalGastoEntradas;
+  const kits = db.getAll('kits');
+  const totalUsuarios = (db.data.usuarios||[]).length;
   const alerts = getAlerts();
 
   const topProd = produtos.map(p => {
@@ -2725,6 +2780,11 @@ function renderDashboard() {
       ${statCard('Prateleiras',prateleiras.length,'shelf','#9B59B6','155,89,182','Prateleiras activas')}
       ${statCard('Fornecedores',fornecedores.length,'supplier','#F39C12','243,156,18','Fornecedores activos')}
       ${statCard('Alertas',alerts.length,'alert',alerts.length>0?'#E74C3C':'#27AE60',alerts.length>0?'231,76,60':'39,174,96','Alertas activos')}
+      ${statCard('Gastos Entradas (AOA)',formatMoney(totalGastoEntradas),'money_in','#16A085','22,160,133','Total gasto em entradas')}
+      ${statCard('Gastos Saídas (AOA)',formatMoney(totalGastoSaidas),'money_out','#C0392B','192,57,43','Total gasto em saídas')}
+      ${statCard('Lucro Ganho (AOA)',formatMoney(lucroGanho),lucroGanho>=0?'profit':'arrow_down',lucroGanho>=0?'#27AE60':'#E74C3C',lucroGanho>=0?'39,174,96':'231,76,60',lucroGanho>=0?'Resultado positivo':'Resultado negativo')}
+      ${statCard('Kits de Produtos',kits.length,'kit_box','#8E44AD','142,68,173','Kits cadastrados')}
+      ${statCard('Utilizadores',totalUsuarios,'users','#2980B9','41,128,185','Total no sistema')}
     </div>
 
     <!-- CHARTS ROW -->
@@ -3584,21 +3644,22 @@ function renderLotes() {
       </div>
       <div class="tbl-scroll">
       <table>
-        <thead><tr><th>Nº Lote</th><th>Produto</th><th>Fornecedor</th><th>Qtd. Inicial</th><th>Stock Actual</th><th>Validade</th><th>Dias Rest.</th><th>Código Barras</th><th>Status</th><th>Acções</th></tr></thead>
+        <thead><tr><th>Nº Lote</th><th>Produto</th><th>Fornecedor</th><th>Qtd. Inicial</th><th>Stock Actual</th><th>Preço (AOA)</th><th>Validade</th><th>Dias Rest.</th><th>Código Barras</th><th>Status</th><th>Acções</th></tr></thead>
         <tbody id="tbody-lotes">
           ${lotes.length ? lotes.map(l=>{
             const prod=db.getById('produtos',l.produto_id);
             const forn=db.getById('fornecedores',l.fornecedor_id);
-            const st=getLotStatus(l.validade);
+            const isBloqueado = !!l.bloqueado;
+            const st=getLotStatus(l.validade, isBloqueado);
             const dias=daysUntil(l.validade);
             const stockActual = db.getLoteStock(l.id);
-            const isBloqueado = !!l.bloqueado;
             return `<tr style="${isBloqueado?'opacity:0.65;background:var(--bg-tertiary,#f5f5f5);':''}">
               <td class="font-mono text-accent">${l.numero_lote}${isBloqueado?` <span style="color:var(--danger,#dc3545);font-size:10px;">🔒</span>`:''}</td>
               <td class="td-name">${prod?prod.nome:'—'}</td>
               <td>${forn?forn.nome:'—'}</td>
               <td class="font-bold">${l.quantidade||0}</td>
               <td class="font-bold ${stockActual<0?'text-danger':stockActual===0?'text-muted':'text-accent'}">${stockActual}</td>
+              <td class="font-mono">${l.preco?formatMoney(l.preco):'—'}</td>
               <td>${formatDate(l.validade)}</td>
               <td class="${dias<0?'text-danger':dias<=90?'text-warning':'text-accent'}">${dias<0?`Há ${Math.abs(dias)}d`:dias===Infinity?'—':`${dias}d`}</td>
               <td class="font-mono text-muted">${l.codigo_barra||'—'}</td>
@@ -3611,7 +3672,7 @@ function renderLotes() {
                 </div>
               </td>
             </tr>`;
-          }).join('') : `<tr><td colspan="10"><div class="table-empty">${ICONS.lot}<p>Nenhum lote encontrado</p></div></td></tr>`}
+          }).join('') : `<tr><td colspan="11"><div class="table-empty">${ICONS.lot}<p>Nenhum lote encontrado</p></div></td></tr>`}
         </tbody>
       </table>
       </div>
@@ -3652,6 +3713,10 @@ function renderLotes() {
               <input class="field-input" id="lote-validade" type="date">
             </div>
             <div class="field-wrap">
+              <label class="field-label">${ICONS.money} Preço Unitário (AOA)</label>
+              <input class="field-input" id="lote-preco" type="number" min="0" step="0.01" placeholder="Opcional">
+            </div>
+            <div class="field-wrap">
               <label class="field-label">${ICONS.barcode} Código de Barras</label>
               <input class="field-input" id="lote-barcode" placeholder="Ex: 7891234567890">
             </div>
@@ -3681,9 +3746,10 @@ function openLoteModal(id=null) {
       document.getElementById('lote-quantidade').value=l.quantidade||'';
       document.getElementById('lote-validade').value=l.validade||'';
       document.getElementById('lote-barcode').value=l.codigo_barra||'';
+      document.getElementById('lote-preco').value=l.preco||'';
     }
   } else {
-    ['lote-numero','lote-quantidade','lote-validade','lote-barcode'].forEach(i=>document.getElementById(i).value='');
+    ['lote-numero','lote-quantidade','lote-validade','lote-barcode','lote-preco'].forEach(i=>document.getElementById(i).value='');
     document.getElementById('lote-produto').value='';
     document.getElementById('lote-fornecedor').value='';
   }
@@ -3699,12 +3765,14 @@ async function saveLote() {
   setLoading(btn,true);
   await new Promise(r=>setTimeout(r,400));
   const qtd=parseInt(document.getElementById('lote-quantidade').value)||0;
+  const lotePreco=parseFloat(document.getElementById('lote-preco').value)||null;
   const data={
     numero_lote:numero, produto_id:prodId,
     fornecedor_id:parseInt(document.getElementById('lote-fornecedor').value)||null,
     quantidade:qtd,
     validade:document.getElementById('lote-validade').value,
     codigo_barra:document.getElementById('lote-barcode').value,
+    preco:lotePreco,
   };
   if(editingId){
     const oldLote=db.getById('lotes',editingId);
@@ -3715,12 +3783,11 @@ async function saveLote() {
     if(qtd > oldQtd && qtd - oldQtd > 0){
       const diff=qtd-oldQtd;
       const forn=db.getById('fornecedores',data.fornecedor_id);
-      const novoLote=db.getById('lotes',editingId);
       db.insert('movimentacoes',{
         produto_id:prodId, produto_nome: db.getById('produtos',prodId)?.nome||`Produto #${prodId}`, tipo:'ENTRADA',
         lote_id:editingId, quantidade:diff,
         destino:`Entrada automática — Adição ao Lote ${numero}${forn?' (Forn: '+forn.nome+')':''}`,
-        data:today(), preco:null, auto:true,
+        data:today(), preco:lotePreco, auto:true,
         usuario_nome: currentUser?.nome || '',
         usuario_id: currentUser?.id || null,
       });
@@ -3736,7 +3803,7 @@ async function saveLote() {
         produto_id:prodId, produto_nome: db.getById('produtos',prodId)?.nome||`Produto #${prodId}`, tipo:'ENTRADA',
         lote_id:novoLote.id, quantidade:qtd,
         destino:`Entrada automática — Novo Lote ${numero}${forn?' | Forn: '+forn.nome:''}`,
-        data:today(), preco:null, auto:true,
+        data:today(), preco:lotePreco, auto:true,
         usuario_nome: currentUser?.nome || '',
         usuario_id: currentUser?.id || null,
       });
@@ -3991,11 +4058,26 @@ function updateMovLotes() {
   const loteSelect = document.getElementById('mov-lote');
   if (!loteSelect) return;
   const prodLotes = db.getAll('lotes').filter(l=>l.produto_id===prodId).sort((a,b)=>new Date(a.validade)-new Date(b.validade));
-  loteSelect.innerHTML = `<option value="">Seleccionar lote...</option>` +
+  loteSelect.innerHTML = `<option value="" data-preco="">Seleccionar lote...</option>` +
     prodLotes.map(l=>{
-      const st=getLotStatus(l.validade);
-      return `<option value="${l.id}">${l.numero_lote} — Val: ${formatDate(l.validade)} (${st.label})</option>`;
+      const st=getLotStatus(l.validade, !!l.bloqueado);
+      return `<option value="${l.id}" data-preco="${l.preco||''}">${l.numero_lote} — Val: ${formatDate(l.validade)} (${st.label})</option>`;
     }).join('');
+  // Reset preco when lotes list changes
+  loteSelect.onchange = function() {
+    const sel = this.options[this.selectedIndex];
+    const precoEl = document.getElementById('mov-preco');
+    if (!precoEl) return;
+    const precoLote = sel ? sel.getAttribute('data-preco') : '';
+    if (precoLote) {
+      precoEl.value = precoLote;
+    } else {
+      // Try to fill from produto preco if no lote preco
+      const produtoId = parseInt(document.getElementById('mov-produto').value);
+      const prod = produtoId ? db.getById('produtos', produtoId) : null;
+      precoEl.value = (prod && prod.preco) ? prod.preco : '';
+    }
+  };
 }
 
 function openMovModal(id=null) {
@@ -4060,7 +4142,21 @@ async function saveMov() {
   if(!prodId){toast('error','Produto obrigatório');return;}
   if(!qtd||qtd<1){toast('error','Quantidade inválida');return;}
   // Verificar se o lote está bloqueado
-  const loteIdSel = parseInt(document.getElementById('mov-lote').value)||null;
+  let loteIdSel = parseInt(document.getElementById('mov-lote').value)||null;
+
+  // Auto-selecionar lote com validade mais próxima em Saídas
+  if (!loteIdSel && tipo.toUpperCase() === 'SAÍDA') {
+    const lotesDisponiveis = db.getAll('lotes')
+      .filter(l => l.produto_id === prodId && !l.bloqueado && daysUntil(l.validade) >= 0 && db.getLoteStock(l.id) > 0)
+      .sort((a, b) => new Date(a.validade) - new Date(b.validade));
+    if (lotesDisponiveis.length > 0) {
+      loteIdSel = lotesDisponiveis[0].id;
+      const loteSelectEl = document.getElementById('mov-lote');
+      if (loteSelectEl) loteSelectEl.value = loteIdSel;
+      toast('info', 'Lote auto-seleccionado', `Lote "${lotesDisponiveis[0].numero_lote}" seleccionado automaticamente (validade mais próxima).`);
+    }
+  }
+
   if (loteIdSel) {
     const loteSel = db.getById('lotes', loteIdSel);
     if (loteSel && loteSel.bloqueado) {
@@ -7278,6 +7374,12 @@ function selectMovCombo(id, nome) {
   if (textInput) textInput.value = nome;
   closeMovCombo();
   updateMovLotes();
+  // Auto-fill preco from produto if available (optional — clears on lote selection)
+  const precoEl = document.getElementById('mov-preco');
+  if (precoEl) {
+    const prod = id ? db.getById('produtos', parseInt(id)) : null;
+    precoEl.value = (prod && prod.preco) ? prod.preco : '';
+  }
 }
 
 // ===================== TABLE-ONLY FILTER FUNCTIONS (no full re-render) =====================
@@ -7363,16 +7465,17 @@ function filterLotesTable(fromSelect) {
   tbody.innerHTML = lotes.length ? lotes.map(l => {
     const prod = db.getById('produtos', l.produto_id);
     const forn = db.getById('fornecedores', l.fornecedor_id);
-    const st   = getLotStatus(l.validade);
+    const isBloqueado = !!l.bloqueado;
+    const st   = getLotStatus(l.validade, isBloqueado);
     const dias = daysUntil(l.validade);
     const stockActual = db.getLoteStock(l.id);
-    const isBloqueado = !!l.bloqueado;
     return `<tr style="${isBloqueado?'opacity:0.65;background:var(--bg-tertiary,#f5f5f5);':''}">
       <td class="font-mono text-accent">${l.numero_lote}${isBloqueado?` <span style="color:var(--danger,#dc3545);font-size:10px;">🔒</span>`:''}</td>
       <td class="td-name">${prod ? prod.nome : '—'}</td>
       <td>${forn ? forn.nome : '—'}</td>
       <td class="font-bold">${l.quantidade||0}</td>
       <td class="font-bold ${stockActual<0?'text-danger':stockActual===0?'text-muted':'text-accent'}">${stockActual}</td>
+      <td class="font-mono">${l.preco?formatMoney(l.preco):'—'}</td>
       <td>${formatDate(l.validade)}</td>
       <td class="${dias<0?'text-danger':dias<=90?'text-warning':'text-accent'}">${dias<0?`Há ${Math.abs(dias)}d`:dias===Infinity?'—':`${dias}d`}</td>
       <td class="font-mono text-muted">${l.codigo_barra||'—'}</td>
@@ -7385,7 +7488,7 @@ function filterLotesTable(fromSelect) {
         </div>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="10"><div class="table-empty">${ICONS.lot}<p>Nenhum lote encontrado${loteSearch?' para "<strong>'+loteSearch+'</strong>"':''}</p></div></td></tr>`;
+  }).join('') : `<tr><td colspan="11"><div class="table-empty">${ICONS.lot}<p>Nenhum lote encontrado${loteSearch?' para "<strong>'+loteSearch+'</strong>"':''}</p></div></td></tr>`;
 
   // Restore focus to search input only when triggered by typing (not by select)
   if (!fromSelect) {
