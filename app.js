@@ -3595,7 +3595,7 @@ function viewShelfProducts(pratId) {
 // ===================== LOTES PAGE =====================
 let loteSearch='', loteFilter='todos';
 function renderLotes() {
-  const produtos = db.getAll('produtos');
+  const produtos = db.getAll('produtos').slice().sort((a,b)=>(a.nome||'').localeCompare(b.nome||'','pt',{sensitivity:'base'}));
   const fornecedores = db.getAll('fornecedores');
   let lotes = db.getAll('lotes');
   if (loteSearch) lotes = lotes.filter(l => {
@@ -4737,6 +4737,8 @@ function getExportData() {
     data[t] = db.getAll(t, false).map(r => {
       const obj = {...r};
       if (t === 'kits' && Array.isArray(obj.componentes)) obj.componentes = JSON.stringify(obj.componentes);
+      // Lotes bloqueados são exportados como ativo=false para preservar o estado
+      if (t === 'lotes') obj.ativo = !obj.bloqueado;
       return obj;
     });
   });
@@ -4754,6 +4756,8 @@ function normalizeImportRow(key, r) {
   else if (obj.ativo === 'TRUE'  || obj.ativo === 'true'  || obj.ativo === 1 || obj.ativo === '1') obj.ativo = true;
   else if (obj.ativo === 'FALSE' || obj.ativo === 'false' || obj.ativo === 0 || obj.ativo === '0') obj.ativo = false;
   else if (typeof obj.ativo === 'number') obj.ativo = obj.ativo !== 0;
+  // Para lotes: restaurar estado bloqueado a partir do campo ativo (ativo=false → bloqueado=true)
+  if (key === 'lotes') obj.bloqueado = (obj.ativo === false);
 
   if (key === 'movimentacoes') {
     // Normalise tipo to uppercase
